@@ -3,6 +3,7 @@
 import { appendFileSync, mkdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { handle } from '../lib/hooks.mjs'
+import { redact } from '../lib/redact.mjs'
 import { vhdbDir } from '../lib/locate.mjs'
 
 let raw = ''
@@ -14,7 +15,7 @@ process.stdin.on('end', async () => {
     if (process.env.VHDB_HOOK_SAMPLES) {
       const dir = join(vhdbDir({ ...process.env, VHDB_PROJECT_DIR: process.env.VHDB_PROJECT_DIR ?? input.cwd }), 'state')
       mkdirSync(dir, { recursive: true })
-      appendFileSync(join(dir, 'hook-samples.jsonl'), `${raw.trim()}\n`)
+      appendFileSync(join(dir, 'hook-samples.jsonl'), `${redact(raw.trim())}\n`)
     }
     const out = await handle(input)
     if (out?.additionalContext) process.stdout.write(`${JSON.stringify({ hookSpecificOutput: { hookEventName: out.event, additionalContext: out.additionalContext } })}\n`)

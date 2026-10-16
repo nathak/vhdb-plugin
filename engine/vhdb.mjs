@@ -94,6 +94,7 @@ export async function open(root, wasmPath = join(dirname(fileURLToPath(import.me
     },
     host_write_atomic(pathPtr, pathLen, dataPtr, dataLen) {
       try {
+        if (overlay && text(pathPtr, pathLen).startsWith('sessions/')) return -2 // the overlay directories are read only
         const target = at(pathPtr, pathLen)
         mkdirSync(dirname(target), { recursive: true })
         const tmp = join(dirname(target), `.${target.split(sep).pop()}.tmp-${process.pid}`)
@@ -119,6 +120,7 @@ export async function open(root, wasmPath = join(dirname(fileURLToPath(import.me
     },
     host_remove(pathPtr, pathLen) {
       try {
+        if (overlay && text(pathPtr, pathLen).startsWith('sessions/')) return -2
         rmSync(at(pathPtr, pathLen), { force: true })
         return 0
       } catch {

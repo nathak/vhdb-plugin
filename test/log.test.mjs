@@ -56,3 +56,24 @@ test('a lock left by a dead process is taken over', () => {
   writeFileSync(join(dir, 'state', 'sess-dead.lock'), `2147483646@${hostname()}`)
   withSession({ VHDB_DIR: dir }, 'dead', ({ emit }) => assert.equal(emit('x').seq, 1))
 })
+
+test('20 processes racing to take over the same stale lock: still strictly increasing seq, nothing dropped', async () => {
+  const dir = tmp()
+  mkdirSync(join(dir, 'state'), { recursive: true })
+  writeFileSync(join(dir, 'state', 'sess-race.lock'), `2147483646@${hostname()}`)
+  const env = { ...process.env, VHDB_DIR: dir }
+  await Promise.all(Array.from({ length: 20 }, () => new Promise((res, rej) => {
+    const c = spawn('node', [WORKER, 'race', '3'], { env })
+    c.on('exit', code => (code === 0 ? res() : rej(new Error(`worker exit ${code}`))))
+  })))
+  const seqs = readFileSync(join(dir, 'log', 'vhdb-race.jsonl'), 'utf8').split('\n').filter(Boolean).map(l => JSON.parse(l).seq)
+  assert.equal(seqs.length, 60)
+  assert.deepEqual(seqs, Array.from({ length: 60 }, (_, i) => i + 1))
+})
+
+test('an empty or very old lock file does not block forever', () => {
+  const dir = tmp()
+  mkdirSync(join(dir, 'state'), { recursive: true })
+  writeFileSync(join(dir, 'state', 'sess-old.lock'), '')
+  withSession({ VHDB_DIR: dir }, 'old', ({ emit }) => assert.equal(emit('x').seq, 1))
+})

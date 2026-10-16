@@ -45,7 +45,7 @@ test('nothing to fingerprint -> null; noise lines alone are skipped', () => {
 })
 
 test('check classification and keys', () => {
-  assert.deepEqual(classify('npm test'), { check: 'test', key: 'npm test', masked: false })
+  assert.deepEqual(classify('npm test'), { check: 'test', key: 'npm test', cwd: '', masked: false, compound: false })
   assert.equal(classify('cd app && NODE_ENV=test pnpm run test -- --watch=false').check, 'test')
   assert.equal(classify('cd app && NODE_ENV=test pnpm run test -- --watch=false').key, 'pnpm run test -- --watch=false')
   assert.equal(classify('cargo clippy --all-targets').check, 'lint')
@@ -67,4 +67,26 @@ test('pipelines and redirections: same key, but the exit status is flagged as hi
   assert.equal(classify('npm test || true').masked, true)
   assert.equal(classify('npm test; true').masked, true)
   assert.equal(classify('npm run build && npm test').masked, false)
+})
+
+test('review cases: ";" and "&" hide the status, compound commands are keyed as a whole, installs and cd', () => {
+  assert.equal(classify('npm test; echo done').masked, true)
+  assert.equal(classify('npm test > out.txt; cat out.txt').masked, true)
+  assert.equal(classify('npm test &').masked, true)
+  assert.equal(classify('npm test\necho x').masked, true)
+  assert.equal(classify('npm test && echo ok').masked, false)
+  assert.equal(classify('npm test 2>&1').masked, false)
+  assert.equal(classify('git commit -m "a; b" && npm test').masked, false) // ";" inside quotes is not a separator
+  const both = classify('tsc && npm test')
+  assert.equal(both.compound, true)
+  assert.equal(both.key, 'tsc && npm test')
+  assert.equal(classify('npm i jest'), null)
+  assert.equal(classify('pip install pytest'), null)
+  assert.equal(classify('cd packages/b && npm test').cwd, 'packages/b')
+  assert.equal(classify('npm test').cwd, '')
+})
+
+test('npm banner lines do not become the message', () => {
+  const f = fingerprint('Exit code 1\n> pkg@1.2.3 build\n> tsc -p .\nerror TS2304: Cannot find name foo.', {})
+  assert.equal(f.type, 'TS2304')
 })

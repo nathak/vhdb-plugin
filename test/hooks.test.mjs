@@ -228,3 +228,77 @@ test('run.mjs prints the hook output JSON for injections', () => {
   assert.equal(out.hookSpecificOutput.hookEventName, 'UserPromptSubmit')
   assert.match(out.hookSpecificOutput.additionalContext, /d-aaaaaaaaaa/)
 })
+
+// ---- review cases: false resolutions and secrets on disk ----
+const pass = (t, cmd, extra = {}, cwd) => t.ev('PostToolUse', 's1', { tool_name: 'Bash', tool_input: { command: cmd, ...extra }, tool_response: {}, ...(cwd ? { cwd } : {}) })
+const lastOf = t => t.log('s1').at(-1)
+
+test('"; echo", "&", run_in_background cannot close an error', async () => {
+  const t = setup()
+  await t.ev('UserPromptSubmit', 's1')
+  await t.ev('PostToolUseFailure', 's1', failure(t))
+  const fp = t.log('s1')[0].fp
+  for (const [cmd, extra] of [['npm test; echo done', {}], ['npm test > out; cat out', {}], ['npm test &', {}], ['npm test', { run_in_background: true }]]) {
+    await pass(t, cmd, extra)
+    assert.equal(lastOf(t).outcome, 'unknown', cmd)
+    assert.equal(readErrors(t.env)[fp].open, true, cmd)
+  }
+})
+
+test('a compound command is keyed as a whole: a passing "tsc" cannot close a failing "tsc && npm test"', async () => {
+  const t = setup()
+  await t.ev('UserPromptSubmit', 's1')
+  await t.ev('PostToolUseFailure', 's1', failure(t, 'tsc && npm test'))
+  const err = t.log('s1')[0]
+  assert.equal(err.etype, 'runtime')
+  assert.equal(err.key, 'tsc && npm test')
+  await pass(t, 'tsc')
+  assert.equal(readErrors(t.env)[err.fp].open, true)
+  await pass(t, 'tsc && npm test')
+  assert.equal(readErrors(t.env)[err.fp].open, false)
+})
+
+test('the same command in another package or worktree is a different scope and does not close the error', async () => {
+  const t = setup()
+  mkdirSync(join(t.repo, 'packages/a'), { recursive: true })
+  mkdirSync(join(t.repo, 'packages/b'), { recursive: true })
+  await t.ev('UserPromptSubmit', 's1')
+  await t.ev('PostToolUseFailure', 's1', { ...failure(t, 'cd packages/a && npm test'), cwd: t.repo })
+  const fp = t.log('s1')[0].fp
+  await pass(t, 'cd packages/b && npm test', {}, t.repo)
+  assert.equal(readErrors(t.env)[fp].open, true)
+  await pass(t, 'npm test', {}, join(t.repo, 'packages/b'))
+  assert.equal(readErrors(t.env)[fp].open, true)
+  await pass(t, 'cd packages/a && npm test', {}, t.repo)
+  assert.equal(readErrors(t.env)[fp].open, false)
+})
+
+test('secrets never reach the log: keys, digit-bearing tokens in messages, url credentials, quoted .env paths', async () => {
+  const t = setup()
+  await t.ev('PostToolUseFailure', 's1', { tool_name: 'Bash', tool_use_id: 'a', tool_input: { command: 'npm test -- --token=ghp_a1b2c3d4e5f6a7b8c9d0e1f2a3b4' }, error: 'Exit code 1\nError: bad token ghp_a1b2c3d4e5f6a7b8c9d0e1f2a3b4 for https://user:hunter2pw@github.com/x' })
+  let all = readFileSync(join(t.env.VHDB_DIR, 'log', 'vhdb-s1.jsonl'), 'utf8') + readFileSync(join(t.env.VHDB_DIR, 'state', 'errors.json'), 'utf8')
+  for (const secret of ['ghp_a1b2', 'hunter2pw']) assert.ok(!all.includes(secret), secret)
+  for (const cmd of ["cat '.env'", 'cat<.env', 'printenv; false', 'env | sort', 'psql postgres://u:pw@h/db']) {
+    const t2 = setup()
+    await t2.ev('PostToolUseFailure', 's1', { tool_name: 'Bash', tool_use_id: 'b', tool_input: { command: cmd }, error: 'Exit code 1\nError: API_PASSWORD leaked: value-xyz' })
+    const e = t2.log('s1')[0]
+    assert.equal(e.command, '', cmd)
+    assert.equal(e.tail, '', cmd)
+    assert.equal(e.sig, '(비공개)', cmd)
+  }
+})
+
+test('hook samples are masked and a crash between append and state save never reuses a seq', async () => {
+  const t = setup()
+  await t.ev('UserPromptSubmit', 's1')
+  await t.ev('PostToolUseFailure', 's1', failure(t))
+  const before = t.log('s1').map(x => x.seq)
+  writeFileSync(join(t.env.VHDB_DIR, 'state', 'sess-s1.json'), JSON.stringify({ seq: 1, turn: 1 })) // state saved before the last appends
+  await t.ev('PostToolUseFailure', 's1', failure(t, 'npm test', 90))
+  const seqs = t.log('s1').map(x => x.seq)
+  assert.deepEqual(seqs, seqs.map((_, i) => i + 1))
+  assert.ok(seqs.length > before.length)
+  const r = spawnSync('node', [RUN], { input: JSON.stringify({ hook_event_name: 'UserPromptSubmit', session_id: 'z', cwd: t.repo, prompt: 'key sk-abcdefghijklmnopqrstuvwxyz' }), env: { ...process.env, ...t.env, VHDB_HOOK_SAMPLES: '1' } })
+  assert.equal(r.status, 0)
+  assert.ok(!readFileSync(join(t.env.VHDB_DIR, 'state', 'hook-samples.jsonl'), 'utf8').includes('sk-abcdef'))
+})

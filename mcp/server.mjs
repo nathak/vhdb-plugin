@@ -3,8 +3,10 @@
 import { history, search } from '../lib/client.mjs'
 import { createHash } from 'node:crypto'
 import { chainEnd, readDecisions } from '../lib/decisions.mjs'
-import { withSession } from '../lib/log.mjs'
-import { normalizeFile } from '../lib/locate.mjs'
+import { join } from 'node:path'
+import { mkdirSync } from 'node:fs'
+import { lock, withSession } from '../lib/log.mjs'
+import { normalizeFile, vhdbDir } from '../lib/locate.mjs'
 import { redact } from '../lib/redact.mjs'
 import { SWITCHES, describeConfig, readConfig, setConfig } from '../lib/config.mjs'
 import { formatHistory, formatSearch } from '../lib/format.mjs'
@@ -81,6 +83,10 @@ const MCP_SID = `mcp-${Date.now()}-${process.pid}`
 
 function recordDecision({ topic, chosen, reason, alternatives, files, supersedes }) {
   if (!readConfig().record) throw new Error('기록 꺼짐: /vhdb:on record 로 켠 뒤 다시 시도')
+  // Check and write under one project-wide lock: two sessions superseding the same decision must not both succeed.
+  mkdirSync(join(vhdbDir(), 'state'), { recursive: true })
+  const unlock = lock(join(vhdbDir(), 'state', 'decisions.lock'))
+  try {
   if (supersedes) {
     const all = readDecisions()
     if (!all.has(supersedes)) throw new Error(`없는 결정: ${supersedes}`)
@@ -99,6 +105,9 @@ function recordDecision({ topic, chosen, reason, alternatives, files, supersedes
     })
   })
   return `기록됨 ${ev.id}${supersedes ? ` (supersedes ${supersedes})` : ''}`
+  } finally {
+    unlock()
+  }
 }
 
 class RpcError extends Error {
