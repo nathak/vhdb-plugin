@@ -213,3 +213,75 @@ test('decisions: random supersede graphs resolve and chain identically', () => {
     for (const id of [...ids, 'zz']) same('chain_end', fn('h.decisions_chain_end', { decisions: got, id }), oracleEv.chainEnd(want, id), { events, id })
   }
 })
+
+// ---- R4: context selection, budget and rendering; prompt helpers ----
+import * as oracleBuild from './oracle/inject.mjs'
+import { build as rustBuild } from '../lib/inject.mjs'
+
+const T0 = Date.parse('2026-09-01T00:00:00Z')
+const WORDS = ['토큰 갱신', 'refresh token', 'interceptor', '경쟁상태', 'auth.js', 'cache invalidation', 'the', 'build 실패', 'TypeError', '<script>', '"quoted"', 'sk-abcdefghijklmnopqrstuvwx', '😀', '한 곳에서만', 'snake_case_name', 'config']
+const FILES = ['src/auth.js', 'src/b.ts', 'lib/c.rs', 'README.md']
+
+function words(next, max = 4) {
+  const n = 1 + Math.floor(next() * max)
+  return Array.from({ length: n }, () => WORDS[Math.floor(next() * WORDS.length)]).join(' ')
+}
+const maybe = (next, p, v) => (next() < p ? v : undefined)
+const some = (next, a) => a[Math.floor(next() * a.length)]
+const subset = (next, a) => a.filter(() => next() < 0.4)
+
+function randomInjectCase(next) {
+  const decisions = new Map()
+  for (let i = 0; i < Math.floor(next() * 7); i++) {
+    const id = `d-${i}`
+    decisions.set(id, {
+      id, status: next() < 0.85 ? 'active' : 'superseded', topic: maybe(next, 0.9, words(next)), chosen: maybe(next, 0.9, words(next, 6)), reason: maybe(next, 0.8, words(next, 8)),
+      files: maybe(next, 0.85, subset(next, FILES)), at: maybe(next, 0.9, T0 + Math.floor(next() * 4e10)),
+    })
+  }
+  const errors = {}
+  for (let i = 0; i < Math.floor(next() * 7); i++) {
+    errors[`fp${i}${next() < 0.5 ? 'abcdef0123456789'.slice(0, 8 + i) : ''}`] = {
+      seen: maybe(next, 0.9, some(next, [0, 1, 2, 3, 2.5, 7, 4294967297])), last: maybe(next, 0.9, T0 + Math.floor(next() * 4e10)), sig: maybe(next, 0.9, words(next, 6)),
+      files: maybe(next, 0.9, subset(next, FILES)), open: maybe(next, 0.9, next() < 0.55), etype: maybe(next, 0.7, some(next, ['runtime', 'test', 'build'])), lastCs: maybe(next, 0.8, some(next, ['me', 'other'])),
+      resolved: maybe(next, 0.5, { confidence: maybe(next, 0.9, some(next, ['observed', 'inferred'])), files: maybe(next, 0.8, subset(next, FILES)) }),
+    }
+  }
+  const chat = Array.from({ length: Math.floor(next() * 5) }, (_, i) => {
+    const kind = some(next, ['prompt', 'reply', 'commit', 'tool.end'])
+    return { score: maybe(next, 0.9, 1 + Math.floor(next() * 20)), record: { kind, session: some(next, ['s1', 's2']), seq: i + 1, at: T0 + Math.floor(next() * 4e10), text: maybe(next, 0.8, words(next, 8)), subject: maybe(next, 0.5, words(next)), sha: maybe(next, 0.5, 'abcdef0123456789'), file: maybe(next, 0.4, some(next, FILES)) } }
+  })
+  const keys = [...decisions.keys()].map(k => `d:${k}`).concat(Object.keys(errors).map(k => `e:${k}`))
+  const injected = {}
+  for (const k of keys) if (next() < 0.3) injected[k] = { turn: Math.floor(next() * 8), at: Math.floor(next() * 2000) }
+  const ctx = {
+    prompt: maybe(next, 0.95, words(next, 8) + (next() < 0.5 ? ` ${some(next, FILES)}` : '')), focus: new Set(subset(next, FILES)), prevOpen: Object.keys(errors).filter(() => next() < 0.3),
+    sessionId: maybe(next, 0.8, 'me'), turn: Math.floor(next() * 10), injected, edits: Array.from({ length: Math.floor(next() * 3) }, () => ({ file: some(next, FILES), at: Math.floor(next() * 3000) })),
+    force: next() < 0.2 ? new Set(Object.keys(errors).filter(() => next() < 0.5)) : undefined,
+  }
+  const opts = next() < 0.3 ? { budgetTokens: 60 + Math.floor(next() * 400), minScore: some(next, [0.01, 0.8, 1.5]) } : {}
+  return { data: { decisions, errors, chat }, ctx, opts }
+}
+
+test('inject: 10,000 random histories select, order, budget and render identically', () => {
+  const next = rng(31)
+  let shown = 0
+  for (let i = 0; i < 10000; i++) {
+    const { data, ctx, opts } = randomInjectCase(next)
+    const want = oracleBuild.build(data, ctx, opts)
+    if (want) shown++
+    same('inject', rustBuild(data, ctx, opts), want, { data: { ...data, decisions: [...data.decisions.values()] }, ctx: { ...ctx, focus: [...ctx.focus] }, opts })
+  }
+  assert.ok(shown > 3000, `only ${shown} cases produced a block; the generator is too weak`)
+})
+
+test('prompt helpers: file words and the engine query', () => {
+  const next = rng(32)
+  const FILE_IN_TEXT = /[\w@./-]+\.[A-Za-z0-9]{1,6}\b/g
+  for (let i = 0; i < 10000; i++) {
+    const p = build(next, [...WORDS, ...FILES, ' ', '\n', './x/y.ts', 'a.b.c', 'AND', 'OR', 'NOT', 'ab', 'abc', '가', '가나', '\u00a0', '😀', '.hidden', 'v1.2.3', 'C:\\x\\y.js'], 14)
+    same('prompt_files', fn('h.prompt_files', p), [...p.matchAll(FILE_IN_TEXT)].map(m => m[0]), p)
+    const words = (p.match(/[A-Za-z0-9_]{3,}|[가-힣]{2,}/g) ?? []).filter(w => !/^(?:AND|OR|NOT)$/.test(w))
+    same('chat_query', fn('h.chat_query', p), [...new Set(words)].slice(0, 12).join(' '), p)
+  }
+})
