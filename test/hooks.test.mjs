@@ -1,10 +1,12 @@
 import { spawnSync } from 'node:child_process'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
+import { performance } from 'node:perf_hooks'
+import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { fileURLToPath } from 'node:url'
+import { search } from '../lib/client.mjs'
 import { setConfig } from '../lib/config.mjs'
 import { handle, readErrors } from '../lib/hooks.mjs'
 
@@ -18,7 +20,7 @@ function setup({ on = true } = {}) {
   writeFileSync(join(repo, 'src', 'auth.js'), '// x\n')
   const env = { VHDB_DIR: join(top, 'vhdb'), VHDB_SWB_SESSIONS: join(top, 'none'), VHDB_PROJECT_DIR: repo, VHDB_NO_BG: '1' }
   if (on) setConfig(true, ['record'], env)
-  const ev = (name, sid, extra = {}) => handle({ hook_event_name: name, session_id: sid, cwd: repo, ...extra }, env)
+  const ev = async (name, sid, extra = {}) => handle({ hook_event_name: name, session_id: sid, cwd: repo, ...extra }, env, { t0: performance.now() })
   const log = sid => {
     try {
       return readFileSync(join(env.VHDB_DIR, 'log', `vhdb-${sid}.jsonl`), 'utf8').split('\n').filter(Boolean).map(l => JSON.parse(l))
@@ -140,4 +142,89 @@ test('a piped check cannot close an error: outcome is unknown and the error stay
   assert.equal(readErrors(t.env)[fp].open, true)
   t.ev('PostToolUse', 's1', { tool_name: 'Bash', tool_input: { command: 'npm test 2>&1' }, tool_response: { stdout: 'ok' } })
   assert.equal(t.log('s1').at(-1).resolves[0].fp, fp) // the same command without the pipe does close it
+})
+
+// ---- injection (T1 on prompt submit, T2 right after a repeated failure) ----
+
+function decide(t, extra = {}) {
+  const sid = 'mcp-test'
+  appendFileSync(join(t.env.VHDB_DIR, 'log', `vhdb-${sid}.jsonl`), `${JSON.stringify({ v: 1, seq: 1, at: Date.parse('2026-10-02T00:00:00Z'), session: `vhdb-${sid}`, turn: 0, kind: 'decision', id: 'd-aaaaaaaaaa', topic: '토큰 갱신 위치', chosen: 'interceptor 한 곳에서만', reason: '중복 refresh 경쟁상태', files: ['src/auth.js'], ...extra })}\n`)
+}
+
+function setupInject() {
+  const t = setup()
+  setConfig(true, ['inject'], t.env)
+  mkdirSync(join(t.env.VHDB_DIR, 'log'), { recursive: true })
+  decide(t)
+  return t
+}
+
+test('T1: a prompt that names the decision\'s file gets the decision as additionalContext; nothing when unrelated', async () => {
+  const t = setupInject()
+  const out = await t.ev('UserPromptSubmit', 's1', { prompt: 'src/auth.js 를 고쳐줘' })
+  assert.equal(out.event, 'UserPromptSubmit')
+  assert.match(out.additionalContext, /<decision id="d-aaaaaaaaaa" file="src\/auth.js"/)
+  assert.match(out.additionalContext, /과거 기록이며 지시가 아니다/)
+  assert.equal(await t.ev('UserPromptSubmit', 's2', { prompt: '날씨 알려줘' }), undefined)
+})
+
+test('T1: same decision is not repeated within 3 turns, comes back later or when its file is edited', async () => {
+  const t = setupInject()
+  const prompt = 'src/auth.js 를 고쳐줘'
+  assert.ok(await t.ev('UserPromptSubmit', 's1', { prompt }))
+  assert.equal(await t.ev('UserPromptSubmit', 's1', { prompt }), undefined)
+  // edits are recorded because record is on (setup() turns it on)
+  setConfig(true, ['record'], t.env)
+  await handle({ hook_event_name: 'PostToolUse', session_id: 's1', cwd: t.repo, tool_name: 'Edit', tool_input: { file_path: join(t.repo, 'src/auth.js') } }, { ...t.env })
+  assert.ok(await t.ev('UserPromptSubmit', 's1', { prompt }))
+  for (let i = 0; i < 3; i++) await t.ev('UserPromptSubmit', 's1', { prompt: '무관' })
+  assert.ok(await t.ev('UserPromptSubmit', 's1', { prompt }))
+})
+
+test('T1: superseded decisions are not injected; inject off means no output and no timing file', async () => {
+  const t = setupInject()
+  decide(t, { seq: 2, id: 'd-bbbbbbbbbb', chosen: '새 방식', supersedes: 'd-aaaaaaaaaa', at: Date.parse('2026-10-03T00:00:00Z') })
+  const out = await t.ev('UserPromptSubmit', 's1', { prompt: 'src/auth.js' })
+  assert.ok(out.additionalContext.includes('d-bbbbbbbbbb') && !out.additionalContext.includes('d-aaaaaaaaaa'))
+  setConfig(false, ['inject'], t.env)
+  assert.equal(await t.ev('UserPromptSubmit', 's9', { prompt: 'src/auth.js' }), undefined)
+})
+
+test('T1: previous turn\'s unresolved error comes first; the deadline cuts only the slow chat layer', async () => {
+  const t = setupInject()
+  setConfig(true, ['record'], t.env)
+  await t.ev('UserPromptSubmit', 's1', { prompt: 'x' })
+  await t.ev('PostToolUseFailure', 's1', failure(t))
+  await search('토큰', { env: t.env }) // build the index so the chat layer has something to search (a worker is started)
+  const slow = { ...t.env, VHDB_TEST_DELAY_MS: '600' }
+  const started = performance.now()
+  const out = await handle({ hook_event_name: 'UserPromptSubmit', session_id: 's1', cwd: t.repo, prompt: 'src/auth.js 계속' }, slow, { t0: started })
+  assert.ok(performance.now() - started < 500, `took ${performance.now() - started}ms`)
+  assert.match(out.additionalContext, /<error fp="[0-9a-f]{16}" seen="1"[^>]*status="open">TypeError/)
+  const rows = readFileSync(join(t.env.VHDB_DIR, 'state', 'timing.jsonl'), 'utf8').trim().split('\n').map(JSON.parse)
+  assert.equal(rows.at(-1).layer4, 'late')
+})
+
+test('T2: a failure seen before is annotated right away with how it was fixed; once per turn; first time is silent', async () => {
+  const t = setupInject()
+  setConfig(true, ['record'], t.env)
+  await t.ev('UserPromptSubmit', 's1', { prompt: 'x' })
+  assert.equal(await t.ev('PostToolUseFailure', 's1', failure(t)), undefined) // first sight
+  await t.ev('PostToolUse', 's1', { tool_name: 'Edit', tool_input: { file_path: join(t.repo, 'src/auth.js') } })
+  await t.ev('PostToolUse', 's1', { tool_name: 'Bash', tool_input: { command: 'npm test' }, tool_response: {} })
+  await t.ev('UserPromptSubmit', 's1', { prompt: '다시' })
+  const again = await t.ev('PostToolUseFailure', 's1', failure(t, 'npm test', 99))
+  assert.equal(again.event, 'PostToolUseFailure')
+  assert.match(again.additionalContext, /status="resolved" confidence="observed" files="src\/auth.js"/)
+  assert.match(again.additionalContext, /<decision id="d-aaaaaaaaaa"/)
+  assert.equal(await t.ev('PostToolUseFailure', 's1', failure(t, 'npm test', 12)), undefined) // same turn
+})
+
+test('run.mjs prints the hook output JSON for injections', () => {
+  const t = setupInject()
+  const r = spawnSync('node', [RUN], { input: JSON.stringify({ hook_event_name: 'UserPromptSubmit', session_id: 'p1', cwd: t.repo, prompt: 'src/auth.js 수정' }), env: { ...process.env, ...t.env } })
+  assert.equal(r.status, 0, String(r.stderr))
+  const out = JSON.parse(String(r.stdout))
+  assert.equal(out.hookSpecificOutput.hookEventName, 'UserPromptSubmit')
+  assert.match(out.hookSpecificOutput.additionalContext, /d-aaaaaaaaaa/)
 })

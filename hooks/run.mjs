@@ -8,7 +8,7 @@ import { vhdbDir } from '../lib/locate.mjs'
 let raw = ''
 process.stdin.setEncoding('utf8')
 process.stdin.on('data', c => (raw += c))
-process.stdin.on('end', () => {
+process.stdin.on('end', async () => {
   try {
     const input = JSON.parse(raw)
     if (process.env.VHDB_HOOK_SAMPLES) {
@@ -16,7 +16,8 @@ process.stdin.on('end', () => {
       mkdirSync(dir, { recursive: true })
       appendFileSync(join(dir, 'hook-samples.jsonl'), `${raw.trim()}\n`)
     }
-    handle(input)
+    const out = await handle(input)
+    if (out?.additionalContext) process.stdout.write(`${JSON.stringify({ hookSpecificOutput: { hookEventName: out.event, additionalContext: out.additionalContext } })}\n`)
   } catch (e) {
     if (process.env.VHDB_DEBUG) console.error(`vhdb hook: ${e.stack ?? e}`)
   }
