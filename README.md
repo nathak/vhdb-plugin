@@ -12,6 +12,13 @@ smart-workbench는 수정하지 않는다. 원장은 읽기만 하고, 엔진 �
 테스트: `npm test`. 환경 변수: `VHDB_DIR`(엔진 루트), `VHDB_SWB_SESSIONS`, `VHDB_WASM`, `VHDB_PROJECT_DIR`.
 설치(로컬): `claude --plugin-dir /home/projects/vhdb-plugin`
 
+## 구조: JS는 접착, 이력 로직은 Rust
+
+이 플러그인의 JS(`hooks/`, `mcp/`, `lib/`)는 Claude Code와 맞닿는 부분만 맡습니다: 훅 입력, MCP 프로토콜, 파일·락·로그 쓰기, 경로 계산.
+마스킹, 오류 지문, 검사 분류, 오류 캐시 전이, 결정 상태, 주입 선정·예산·렌더, 출력 포맷은 엔진 저장소의 `vhdb_core::history`(Rust)가
+계산하고, `engine/vhdb.wasm`을 `lib/core.mjs`가 동기 방식으로 불러 `h.*` 명령으로 호출합니다. wasm이 없거나 프로토콜 번호가 다르면
+훅은 조용히 아무것도 하지 않습니다. 엔진을 갱신하려면 `scripts/sync-engine.sh`(엔진 커밋 뒤에 실행해야 `engine/SOURCE`가 맞습니다).
+
 ## M1: 기록과 맥락 주입 (기본은 모두 꺼짐)
 
 `/vhdb:on [all|record|inject|guard]`, `/vhdb:off ...`, `/vhdb:status` (MCP 툴 `vhdb_config`). 설정은 `<git common dir>/vhdb/config.json`,
