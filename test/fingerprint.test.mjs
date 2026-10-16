@@ -45,7 +45,7 @@ test('nothing to fingerprint -> null; noise lines alone are skipped', () => {
 })
 
 test('check classification and keys', () => {
-  assert.deepEqual(classify('npm test'), { check: 'test', key: 'npm test' })
+  assert.deepEqual(classify('npm test'), { check: 'test', key: 'npm test', masked: false })
   assert.equal(classify('cd app && NODE_ENV=test pnpm run test -- --watch=false').check, 'test')
   assert.equal(classify('cd app && NODE_ENV=test pnpm run test -- --watch=false').key, 'pnpm run test -- --watch=false')
   assert.equal(classify('cargo clippy --all-targets').check, 'lint')
@@ -55,4 +55,16 @@ test('check classification and keys', () => {
   assert.equal(classify('git commit -m "run npm test"'), null)
   assert.equal(classify('echo vitest'), null)
   assert.equal(classify('ls -la'), null)
+})
+
+test('pipelines and redirections: same key, but the exit status is flagged as hidden', () => {
+  const piped = classify('npm test 2>&1 | tail -30')
+  assert.equal(piped.key, 'npm test')
+  assert.equal(piped.masked, true)
+  assert.equal(classify('npm test 2>&1').masked, false)
+  assert.equal(classify('npm test 2>&1').key, 'npm test')
+  assert.equal(classify('cargo test > out.txt').key, 'cargo test')
+  assert.equal(classify('npm test || true').masked, true)
+  assert.equal(classify('npm test; true').masked, true)
+  assert.equal(classify('npm run build && npm test').masked, false)
 })
