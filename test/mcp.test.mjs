@@ -95,14 +95,14 @@ test('MCP round trip', async () => {
 })
 
 test('a chunk split mid-line is reassembled; a missing ledger is a tool error, not a crash', async () => {
-  const s = start({ VHDB_LEDGER_DIR: '/nonexistent/ledger', VHDB_WASM: makeLedger().env.VHDB_WASM })
+  const s = start({ VHDB_DIR: '/nonexistent/vhdb', VHDB_SWB_SESSIONS: '/nonexistent/sessions', VHDB_WASM: makeLedger().env.VHDB_WASM })
   const msg = `${JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'query_history', arguments: { query: 'a' } } })}\n`
   s.raw(msg.slice(0, 20))
   await new Promise(r => setTimeout(r, 50))
   s.raw(msg.slice(20))
   const r = await s.nextJson()
   assert.equal(r.result.isError, true)
-  assert.match(r.result.content[0].text, /원장이 꺼져 있음/)
+  assert.match(r.result.content[0].text, /읽을 이력이 없음/)
   s.send({ jsonrpc: '2.0', id: 2, method: 'ping' })
   assert.equal((await s.nextJson()).id, 2) // still alive
   s.close()

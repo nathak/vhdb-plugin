@@ -10,8 +10,11 @@ import { hostname } from 'node:os'
 import { dirname, join, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-export async function open(root, wasmPath = join(dirname(fileURLToPath(import.meta.url)), 'vhdb.wasm')) {
+// `sessions` (optional): real directories shown together as the engine's virtual `sessions/` (read-only, first match wins).
+// Everything else (data/, index/, MANIFEST, LOCK) lives under `root`. Without it, `root/sessions` is used as before.
+export async function open(root, wasmPath = join(dirname(fileURLToPath(import.meta.url)), 'vhdb.wasm'), { sessions } = {}) {
   const base = resolve(root)
+  const overlay = sessions ? sessions.map(d => resolve(d)) : null
   let memory
   let staged = new Uint8Array(0)
   const text = (ptr, len) => new TextDecoder().decode(new Uint8Array(memory.buffer, ptr, len))
@@ -21,6 +24,19 @@ export async function open(root, wasmPath = join(dirname(fileURLToPath(import.me
     if (rel.startsWith('/') || rel.split('/').some(part => part === '..' || part === '')) throw new Error(`bad path ${rel}`)
     const full = resolve(base, ...rel.split('/'))
     if (full !== base && !full.startsWith(base + sep)) throw new Error(`bad path ${rel}`)
+    if (overlay && rel.startsWith('sessions/')) {
+      const name = rel.slice('sessions/'.length)
+      for (const dir of overlay) {
+        const candidate = join(dir, name)
+        try {
+          statSync(candidate)
+          return candidate
+        } catch {
+          // try the next directory
+        }
+      }
+      return join(overlay[0] ?? base, name) // absent everywhere: the caller sees ENOENT
+    }
     return full
   }
 
@@ -52,6 +68,18 @@ export async function open(root, wasmPath = join(dirname(fileURLToPath(import.me
     },
     host_list(dirPtr, dirLen) {
       try {
+        if (overlay && text(dirPtr, dirLen) === 'sessions') {
+          const names = new Set()
+          for (const dir of overlay) {
+            try {
+              for (const d of readdirSync(dir, { withFileTypes: true })) if (d.isFile() && !d.name.startsWith('.')) names.add(d.name)
+            } catch (e) {
+              if (e.code !== 'ENOENT') throw e
+            }
+          }
+          staged = new TextEncoder().encode([...names].sort().join('\n'))
+          return BigInt(staged.length)
+        }
         const names = readdirSync(at(dirPtr, dirLen), { withFileTypes: true }).filter(d => d.isFile() && !d.name.startsWith('.')).map(d => d.name)
         staged = new TextEncoder().encode(names.join('\n'))
         return BigInt(staged.length)
