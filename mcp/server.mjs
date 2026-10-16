@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 // Dependency-free MCP server over stdio (one JSON-RPC message per line). stdout carries protocol messages only.
 import { history, search } from '../lib/client.mjs'
+import { SWITCHES, describeConfig, readConfig, setConfig } from '../lib/config.mjs'
 import { formatHistory, formatSearch } from '../lib/format.mjs'
 
 const VERSION = '0.1.0'
@@ -39,6 +40,19 @@ const TOOLS = [
       additionalProperties: false,
     },
   },
+  {
+    name: 'vhdb_config',
+    description: 'VHDB 스위치를 켜거나 끄거나 보여 준다: record(훅 기록), inject(맥락 주입), guard(편집 전 확인). 기본은 모두 꺼짐.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        action: { type: 'string', enum: ['on', 'off', 'status'] },
+        targets: { type: 'array', items: { type: 'string', enum: ['all', ...SWITCHES] }, maxItems: 4, description: '비우면 all(record+inject)' },
+      },
+      required: ['action'],
+      additionalProperties: false,
+    },
+  },
 ]
 
 class RpcError extends Error {
@@ -66,6 +80,11 @@ async function callTool(name, args = {}) {
     if (typeof args.path !== 'string' || !args.path.trim()) throw new RpcError(-32602, 'path는 비어 있지 않은 문자열')
     const limit = intIn(args.limit, 5, 1, 20, 'limit')
     run = async () => formatHistory(await history(args.path, { limit }), args.path)
+  } else if (name === 'vhdb_config') {
+    if (!['on', 'off', 'status'].includes(args.action)) throw new RpcError(-32602, 'action은 on|off|status')
+    const targets = args.targets ?? []
+    if (!Array.isArray(targets) || targets.some(t => typeof t !== 'string')) throw new RpcError(-32602, 'targets는 문자열 배열')
+    run = async () => describeConfig(args.action === 'status' ? readConfig() : setConfig(args.action === 'on', targets))
   } else {
     throw new RpcError(-32602, `모르는 툴: ${name}`)
   }

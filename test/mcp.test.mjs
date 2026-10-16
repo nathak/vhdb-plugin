@@ -54,7 +54,7 @@ test('MCP round trip', async () => {
 
   s.send({ jsonrpc: '2.0', id: 3, method: 'tools/list' })
   r = await s.nextJson()
-  assert.deepEqual(r.result.tools.map(t => t.name), ['query_history', 'file_history'])
+  assert.deepEqual(r.result.tools.map(t => t.name), ['query_history', 'file_history', 'vhdb_config'])
   assert.ok(r.result.tools.every(t => t.inputSchema.type === 'object' && t.inputSchema.additionalProperties === false))
 
   s.send({ jsonrpc: '2.0', id: 4, method: 'tools/call', params: { name: 'query_history', arguments: { query: 'kind:edit', limit: 5 } } })
@@ -116,6 +116,31 @@ test('a tool failure inside the line chain does not stop later requests', async 
   assert.equal((await s.nextJson()).result.isError, true)
   s.send({ jsonrpc: '2.0', id: 2, method: 'ping' })
   assert.equal((await s.nextJson()).id, 2)
+  s.close()
+  assert.equal(await s.exited, 0)
+})
+
+test('vhdb_config: off by default, on/off round trip, bad switch rejected, nothing created before first change', async () => {
+  const { existsSync } = await import('node:fs')
+  const { join } = await import('node:path')
+  const l = makeLedger()
+  const s = start(l.env)
+  const call = async (id, args) => {
+    s.send({ jsonrpc: '2.0', id, method: 'tools/call', params: { name: 'vhdb_config', arguments: args } })
+    return s.nextJson()
+  }
+  let r = await call(1, { action: 'status' })
+  assert.match(r.result.content[0].text, /기록\(record\) 꺼짐, 주입\(inject\) 꺼짐/)
+  assert.equal(existsSync(join(l.root, 'config.json')), false)
+  r = await call(2, { action: 'on', targets: ['record'] })
+  assert.match(r.result.content[0].text, /기록\(record\) 켜짐, 주입\(inject\) 꺼짐/)
+  r = await call(3, { action: 'on' })
+  assert.match(r.result.content[0].text, /기록\(record\) 켜짐, 주입\(inject\) 켜짐, 편집 전 확인\(guard\) 꺼짐/)
+  r = await call(4, { action: 'off', targets: ['all'] })
+  assert.match(r.result.content[0].text, /기록\(record\) 꺼짐, 주입\(inject\) 꺼짐/)
+  assert.equal((await call(5, { action: 'toggle' })).error.code, -32602)
+  r = await call(6, { action: 'on', targets: ['bogus'] })
+  assert.equal(r.result.isError, true)
   s.close()
   assert.equal(await s.exited, 0)
 })
