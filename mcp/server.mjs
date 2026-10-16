@@ -2,7 +2,8 @@
 // Dependency-free MCP server over stdio (one JSON-RPC message per line). stdout carries protocol messages only.
 import { history, search } from '../lib/client.mjs'
 import { createHash } from 'node:crypto'
-import { chainEnd, readDecisions } from '../lib/decisions.mjs'
+import { fn } from '../lib/core.mjs'
+import { readDecisions } from '../lib/decisions.mjs'
 import { join } from 'node:path'
 import { mkdirSync } from 'node:fs'
 import { lock, withSession } from '../lib/log.mjs'
@@ -87,24 +88,23 @@ function recordDecision({ topic, chosen, reason, alternatives, files, supersedes
   mkdirSync(join(vhdbDir(), 'state'), { recursive: true })
   const unlock = lock(join(vhdbDir(), 'state', 'decisions.lock'))
   try {
-  if (supersedes) {
-    const all = readDecisions()
-    if (!all.has(supersedes)) throw new Error(`없는 결정: ${supersedes}`)
-    if (all.get(supersedes).status === 'superseded') throw new Error(`${supersedes} 는 이미 ${chainEnd(all, supersedes)} 로 대체됨 — 현재 유효한 결정을 supersedes 로 지정`)
-  }
-  const ev = withSession(process.env, MCP_SID, ({ emit, state }) => {
-    const id = `d-${createHash('sha1').update(`${MCP_SID}|${state.seq + 1}|${topic}|${chosen}`).digest('hex').slice(0, 10)}`
-    return emit('decision', {
-      id,
-      topic: redact(topic),
-      chosen: redact(chosen),
-      reason: redact(reason),
-      alternatives: alternatives.map(redact),
-      files: files.map(f => normalizeFile(f)),
-      ...(supersedes ? { supersedes } : {}),
+    if (supersedes) {
+      const chk = fn('h.supersede_check', { decisions: [...readDecisions().values()], supersedes })
+      if (!chk.ok) throw new Error(chk.reason === 'missing' ? `없는 결정: ${supersedes}` : `${supersedes} 는 이미 ${chk.end} 로 대체됨 — 현재 유효한 결정을 supersedes 로 지정`)
+    }
+    const ev = withSession(process.env, MCP_SID, ({ emit, state }) => {
+      const id = `d-${createHash('sha1').update(`${MCP_SID}|${state.seq + 1}|${topic}|${chosen}`).digest('hex').slice(0, 10)}`
+      return emit('decision', {
+        id,
+        topic: redact(topic),
+        chosen: redact(chosen),
+        reason: redact(reason),
+        alternatives: alternatives.map(redact),
+        files: files.map(f => normalizeFile(f)),
+        ...(supersedes ? { supersedes } : {}),
+      })
     })
-  })
-  return `기록됨 ${ev.id}${supersedes ? ` (supersedes ${supersedes})` : ''}`
+    return `기록됨 ${ev.id}${supersedes ? ` (supersedes ${supersedes})` : ''}`
   } finally {
     unlock()
   }

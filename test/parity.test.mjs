@@ -128,3 +128,88 @@ test(`fingerprint: ${NF} random outputs (with and without repo/home prefixes)`, 
   }
   assert.ok(produced > NF / 2, `only ${produced} outputs produced a fingerprint; the generator is too weak`)
 })
+
+// ---- R3: analysis of failed/passing commands, error-cache transitions, decision state ----
+import * as oracleEv from './oracle/events.mjs'
+
+const ROOT = '/home/me/proj'
+const optional = (next, v) => (next() < 0.7 ? v : undefined)
+
+function randomFail(next) {
+  return {
+    command: build(next, CMD_FRAGMENTS, 8),
+    error: build(next, OUT_FRAGMENTS, 25),
+    tool_name: optional(next, 'Bash'),
+    tool_use_id: optional(next, `tu${Math.floor(next() * 1000)}`),
+    interrupt: next() < 0.05,
+    root: next() < 0.9 ? ROOT : '',
+    rel: next() < 0.5 ? '' : 'packages/b',
+    home: next() < 0.8 ? '/home/me' : '',
+  }
+}
+
+test(`analyze_fail: ${NF} random failures`, () => {
+  const next = rng(21)
+  let produced = 0
+  for (let i = 0; i < NF; i++) {
+    const input = randomFail(next)
+    const want = oracleEv.analyzeFail(input)
+    if (want) produced++
+    same('analyze_fail', fn('h.analyze_fail', input), want, input)
+  }
+  assert.ok(produced > NF / 3, `only ${produced} produced an analysis`)
+})
+
+test(`analyze_pass: ${NF} random commands`, () => {
+  const next = rng(22)
+  for (let i = 0; i < NF; i++) {
+    const input = { command: build(next, CMD_FRAGMENTS, 8), tool_use_id: optional(next, 'tu1'), run_in_background: next() < 0.1 ? true : undefined, root: ROOT, rel: next() < 0.5 ? '' : 'pkg' }
+    same('analyze_pass', fn('h.analyze_pass', input), oracleEv.analyzePass(input), input)
+  }
+})
+
+test('error cache: 5,000 random operation sequences give the same cache, prior, resolves and pruning', () => {
+  const next = rng(23)
+  const pick = a => a[Math.floor(next() * a.length)]
+  const sortResolves = r => [...r].sort((a, b) => (a.fp < b.fp ? -1 : 1))
+  for (let run = 0; run < 5000; run++) {
+    let cache = {}
+    let now = 1000
+    const edits = []
+    for (let step = 0; step < 12; step++) {
+      now += 1 + Math.floor(next() * 50)
+      const cs = pick(['s1', 's2', 's3'])
+      if (next() < 0.3) edits.push({ file: pick(['a.js', 'b.js', 'c.js']), at: now - Math.floor(next() * 80) })
+      if (next() < 0.6) {
+        const input = { cache, fp: pick(['f1', 'f2', 'f3', 'f4']), etype: pick(['test', 'build', 'runtime']), sig: 'sig', key: pick(['npm test', 'cargo build']), scope: pick(['sc1', 'sc2']), files: [pick(['a.js', 'b.js'])], now, cs }
+        const want = oracleEv.errorsFail(input)
+        const got = fn('h.errors_fail', input)
+        same('errors_fail', got, want, input)
+        cache = want.cache
+      } else {
+        const input = { cache, key: pick(['npm test', 'cargo build']), scope: pick(['sc1', 'sc2']), now, cs, turn: Math.floor(next() * 5), edits }
+        const want = oracleEv.errorsPass(input)
+        const got = fn('h.errors_pass', input)
+        same('errors_pass cache', got.cache, want.cache, input)
+        same('errors_pass resolves', sortResolves(got.resolves), sortResolves(want.resolves), input) // order of closing is by fingerprint in Rust
+        cache = want.cache
+      }
+      const open_fps = ['f1', 'f2', 'f3', 'f4', 'nope'].filter(() => next() < 0.6)
+      same('errors_prune', fn('h.errors_prune', { cache, open_fps }), oracleEv.errorsPrune({ cache, open_fps }), open_fps)
+    }
+  }
+})
+
+test('decisions: random supersede graphs resolve and chain identically', () => {
+  const next = rng(24)
+  const ids = Array.from({ length: 8 }, (_, i) => `d-${i}`)
+  for (let run = 0; run < 3000; run++) {
+    const events = Array.from({ length: 1 + Math.floor(next() * 8) }, (_, i) => ({
+      id: ids[Math.floor(next() * ids.length)], at: Math.floor(next() * 5), seq: i, topic: 't', ...(next() < 0.6 ? { supersedes: ids[Math.floor(next() * ids.length)] } : {}),
+    }))
+    const want = oracleEv.decisionsResolve(events)
+    const got = fn('h.decisions_resolve', events)
+    same('decisions_resolve', got, want, events)
+    for (const id of [...ids, 'zz']) same('chain_end', fn('h.decisions_chain_end', { decisions: got, id }), oracleEv.chainEnd(want, id), { events, id })
+  }
+})
