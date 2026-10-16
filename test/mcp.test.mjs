@@ -1,6 +1,6 @@
 import { spawn } from 'node:child_process'
 import assert from 'node:assert/strict'
-import test from 'node:test'
+import test, { after } from 'node:test'
 import { fileURLToPath } from 'node:url'
 import { makeLedger } from './fixture.mjs'
 
@@ -22,6 +22,7 @@ function start(env) {
     }
   })
   const exited = new Promise(res => child.on('exit', code => res(code)))
+  after(() => child.kill()) // an assertion failing mid-test must not leave the server (and the runner) hanging
   const next = async () => {
     while (!lines.length) await new Promise(r => waiters.push(r))
     return lines.shift()
@@ -54,7 +55,7 @@ test('MCP round trip', async () => {
 
   s.send({ jsonrpc: '2.0', id: 3, method: 'tools/list' })
   r = await s.nextJson()
-  assert.deepEqual(r.result.tools.map(t => t.name), ['query_history', 'file_history', 'vhdb_config'])
+  assert.deepEqual(r.result.tools.map(t => t.name), ['query_history', 'file_history', 'record_decision', 'vhdb_config'])
   assert.ok(r.result.tools.every(t => t.inputSchema.type === 'object' && t.inputSchema.additionalProperties === false))
 
   s.send({ jsonrpc: '2.0', id: 4, method: 'tools/call', params: { name: 'query_history', arguments: { query: 'kind:edit', limit: 5 } } })
@@ -143,4 +144,76 @@ test('vhdb_config: off by default, on/off round trip, bad switch rejected, nothi
   assert.equal(r.result.isError, true)
   s.close()
   assert.equal(await s.exited, 0)
+})
+
+test('record_decision: off by default, records, supersede chain of 3, stale supersede refused, status filter', async () => {
+  const l = makeLedger()
+  const s = start(l.env)
+  let n = 100
+  const tool = async (name, args) => {
+    s.send({ jsonrpc: '2.0', id: ++n, method: 'tools/call', params: { name, arguments: args } })
+    return s.nextJson()
+  }
+  const text = r => r.result.content[0].text
+  const dec = (topic, chosen, extra = {}) => tool('record_decision', { topic, chosen, reason: `${chosen} 이유`, files: ['./src/a.ts'], ...extra })
+
+  let r = await dec('토큰갱신', 'interceptor')
+  assert.equal(r.result.isError, true)
+  assert.match(text(r), /기록 꺼짐/)
+
+  await tool('vhdb_config', { action: 'on', targets: ['record'] })
+  r = await dec('토큰갱신', '방식A')
+  const a = /d-[0-9a-f]{10}/.exec(text(r))[0]
+  r = await dec('토큰갱신', '방식B', { supersedes: a })
+  const b = /d-[0-9a-f]{10}/.exec(text(r))[0]
+  r = await dec('토큰갱신', '방식C', { supersedes: b })
+  const c = /d-[0-9a-f]{10}/.exec(text(r))[0]
+  assert.equal(new Set([a, b, c]).size, 3)
+
+  r = await dec('토큰갱신', '방식D', { supersedes: a }) // a is already replaced
+  assert.equal(r.result.isError, true)
+  assert.match(text(r), new RegExp(`${c}`))
+  r = await dec('x', 'y', { supersedes: 'd-0000000000' })
+  assert.equal(r.result.isError, true)
+  assert.match(text(r), /없는 결정/)
+  assert.equal((await dec('x', 'y', { supersedes: 'nope' })).error.code, -32602)
+  assert.equal((await tool('record_decision', { topic: 't' })).error.code, -32602)
+
+  const q = async query => text(await tool('query_history', { query, limit: 20 }))
+  const active = await q('kind:decision 토큰갱신')
+  assert.match(active, /방식C/)
+  assert.ok(!/방식A|방식B/.test(active))
+  assert.match(active, /대체된 결정 2건 숨김/)
+  const all = await q('kind:decision 토큰갱신 status:all')
+  assert.ok(/방식A/.test(all) && /방식B/.test(all) && /방식C/.test(all))
+  assert.match(all, /\(superseded\)/)
+  const old = await q('kind:decision status:superseded 토큰갱신')
+  assert.ok(/방식A/.test(old) && /방식B/.test(old) && !/방식C/.test(old))
+  const byFile = await q('file:src/a.ts kind:decision')
+  assert.match(byFile, /방식C/)
+  s.close()
+  assert.equal(await s.exited, 0)
+})
+
+test('error:<fp> finds the error and the check that carried it', async () => {
+  const { handle } = await import('../lib/hooks.mjs')
+  const { mkdirSync, mkdtempSync } = await import('node:fs')
+  const { tmpdir } = await import('node:os')
+  const { join } = await import('node:path')
+  const l = makeLedger()
+  const repo = mkdtempSync(join(tmpdir(), 'vhdb-r-'))
+  mkdirSync(join(repo, '.git'))
+  const env = { ...l.env, VHDB_PROJECT_DIR: repo, VHDB_NO_BG: '1' }
+  const { setConfig } = await import('../lib/config.mjs')
+  setConfig(true, ['record'], env)
+  handle({ hook_event_name: 'PostToolUseFailure', session_id: 'e1', cwd: repo, tool_name: 'Bash', tool_use_id: 'u', tool_input: { command: 'npm test' }, error: 'Exit code 1\nRangeError: Maximum call stack size exceeded\n    at f (src/x.js:3:1)' }, env)
+  const log = (await import('node:fs')).readFileSync(join(l.root, 'log', 'vhdb-e1.jsonl'), 'utf8').split('\n').filter(Boolean).map(x => JSON.parse(x))
+  const fp = log[0].fp
+  const s = start(env)
+  s.send({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'query_history', arguments: { query: `error:${fp}` } } })
+  const t = (await s.nextJson()).result.content[0].text
+  assert.match(t, new RegExp(`\\[error\\].*fp:${fp}`))
+  assert.match(t, /\[check\] .*fail/)
+  assert.ok(!t.includes('at f (src/x.js'), 'the output tail (stack) is never shown')
+  s.close()
 })
