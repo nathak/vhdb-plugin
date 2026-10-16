@@ -108,3 +108,14 @@ test('a chunk split mid-line is reassembled; a missing ledger is a tool error, n
   s.close()
   assert.equal(await s.exited, 0)
 })
+
+test('a tool failure inside the line chain does not stop later requests', async () => {
+  const l = makeLedger()
+  const s = start({ ...l.env, VHDB_WASM: '/nonexistent.wasm' })
+  s.send({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'query_history', arguments: { query: 'a' } } })
+  assert.equal((await s.nextJson()).result.isError, true)
+  s.send({ jsonrpc: '2.0', id: 2, method: 'ping' })
+  assert.equal((await s.nextJson()).id, 2)
+  s.close()
+  assert.equal(await s.exited, 0)
+})

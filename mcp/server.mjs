@@ -146,10 +146,10 @@ process.stdin.on('data', chunk => {
   while ((i = buf.indexOf('\n')) >= 0) {
     const line = buf.slice(0, i)
     buf = buf.slice(i + 1)
-    chain = chain.then(() => onLine(line))
+    chain = chain.then(() => onLine(line)).catch(e => console.error('line failed', e))
   }
 })
 process.stdin.on('end', () => {
-  if (buf.trim()) chain = chain.then(() => onLine(buf))
+  if (buf.trim()) chain = chain.then(() => onLine(buf)).catch(e => console.error('line failed', e))
   chain.then(() => process.exit(0))
 })

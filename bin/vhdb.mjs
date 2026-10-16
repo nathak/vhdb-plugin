@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Human/test CLI: vhdb.mjs search <VQL...> | history <file> | stat   [--json] [--limit N] [--any]
 import { history, search, stat } from '../lib/client.mjs'
-import { formatHistory, formatSearch } from '../lib/format.mjs'
+import { formatHistory, formatSearch, redact } from '../lib/format.mjs'
 
 const argv = process.argv.slice(2)
 const take = (name, hasValue) => {
@@ -31,7 +31,7 @@ try {
     console.error('usage: vhdb.mjs search <VQL...> | history <file> | stat  [--json] [--limit N] [--any]')
     process.exit(2)
   }
-  console.log(json ? JSON.stringify(result) : text())
+  console.log(json ? JSON.stringify(result, (_k, v) => (typeof v === 'string' ? redact(v) : v)) : text())
   process.exit(result.answer.ok ? 0 : 1)
 } catch (e) {
   console.error(`vhdb: ${e.message}`)
