@@ -12,6 +12,38 @@ import { fileURLToPath } from 'node:url'
 
 // `sessions` (optional): real directories shown together as the engine's virtual `sessions/` (read-only, first match wins).
 // Everything else (data/, index/, MANIFEST, LOCK) lives under `root`. Without it, `root/sessions` is used as before.
+// Synchronous, storage-less instance for the stateless `h.*` verbs (history logic). Every file import fails, so it
+// can only compute. `fn(verb, value)` sends one JSON value and returns the answer's `value`; { ok: false } throws.
+export function loadSync(wasmPath = join(dirname(fileURLToPath(import.meta.url)), 'vhdb.wasm')) {
+  const no = () => -2n
+  const imports = { vhdb_host: { host_read: no, host_size: no, host_list: no, host_take() {}, host_write_atomic: () => -2, host_remove: () => -2 } }
+  const instance = new WebAssembly.Instance(new WebAssembly.Module(readFileSync(wasmPath)), imports)
+  const { memory, vhdb_alloc, vhdb_free, vhdb_call } = instance.exports
+  const dec = new TextDecoder()
+  const enc = new TextEncoder()
+  const call = command => {
+    const bytes = enc.encode(command)
+    const ptr = vhdb_alloc(bytes.length)
+    new Uint8Array(memory.buffer, ptr, bytes.length).set(bytes)
+    const packed = BigInt.asUintN(64, vhdb_call(ptr, bytes.length))
+    vhdb_free(ptr, bytes.length)
+    const outPtr = Number(packed >> 32n)
+    const outLen = Number(packed & 0xffffffffn)
+    const answer = JSON.parse(dec.decode(new Uint8Array(memory.buffer, outPtr, outLen)))
+    vhdb_free(outPtr, outLen)
+    return answer
+  }
+  return {
+    fn(verb, value) {
+      // lone surrogates cannot be represented in JSON text the engine parses; JavaScript would send them as \udXXX
+      const json = JSON.stringify(value, (_k, v) => (typeof v === 'string' ? v.toWellFormed() : v))
+      const answer = call(`${verb} ${json}`)
+      if (!answer.ok) throw new Error(answer.error ?? `${verb} failed`)
+      return answer.value
+    },
+  }
+}
+
 export async function open(root, wasmPath = join(dirname(fileURLToPath(import.meta.url)), 'vhdb.wasm'), { sessions } = {}) {
   const base = resolve(root)
   const overlay = sessions ? sessions.map(d => resolve(d)) : null

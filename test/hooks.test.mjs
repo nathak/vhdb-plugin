@@ -315,7 +315,7 @@ test('review round 2: sensitive commands keep no key; AWS-style names and Author
   for (const secret of ['wJalrXUtn', 'dXNlcjpw', 'sk_live_abcdef']) assert.ok(!all.includes(secret), secret)
 })
 
-test('review round 2: missing wasm does not remove the decision and error layers; record off + inject on shows decisions only', async () => {
+test('review round 2: a failing chat-layer worker (bad wasm path for the worker only) keeps the other layers; record off + inject on shows decisions only', async () => {
   const t = setupInject()
   await search('토큰', { env: t.env }) // so a MANIFEST exists and the worker path is attempted
   const out = await t.ev('UserPromptSubmit', 's1', { prompt: 'src/auth.js 수정' })
@@ -358,4 +358,14 @@ test('review round 2: T2 is remembered so the next T1 does not repeat it; chat l
   await search('캐시', { env: l.env })
   const out = await handle({ hook_event_name: 'UserPromptSubmit', session_id: 'c1', cwd: t.repo, prompt: '캐시 무효화 전략이 뭐였지' }, { ...l.env, VHDB_PROJECT_DIR: t.repo }, { t0: performance.now() })
   assert.match(out.additionalContext, /<history kind="prompt" at="2026-09-01">캐시 무효화 전략을/)
+})
+
+test('without the core wasm a hook does nothing, quietly: exit 0, no output, nothing recorded', () => {
+  const t = setupInject()
+  const r = spawnSync('node', [RUN], { input: JSON.stringify({ hook_event_name: 'UserPromptSubmit', session_id: 'w1', cwd: t.repo, prompt: 'src/auth.js 수정' }), env: { ...process.env, ...t.env, VHDB_WASM: '/nope.wasm' } })
+  assert.equal(r.status, 0)
+  assert.equal(String(r.stdout), '')
+  const f = spawnSync('node', [RUN], { input: JSON.stringify({ hook_event_name: 'PostToolUseFailure', session_id: 'w1', cwd: t.repo, ...failure(t) }), env: { ...process.env, ...t.env, VHDB_WASM: '/nope.wasm' } })
+  assert.equal(f.status, 0)
+  assert.deepEqual(t.log('w1'), [])
 })
