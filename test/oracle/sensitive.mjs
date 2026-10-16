@@ -1,0 +1,2 @@
+// ORACLE (pre-Rust JavaScript, kept only to prove the Rust port gives identical results; deleted in R5)
+export const SENSITIVE = /(?:^|[\s/='"<>])\.env\b|\.pem\b|id_rsa|id_ed25519|credentials|\.npmrc|\.netrc|secrets?\b|keystore|secret|passw(?:or)?d|credential|api[_-]?key|access[_-]?key|private[_-]?key|\bprintenv\b|(?:^|[;&|\s])env\s*(?:$|[;&|])|\bexport\s+-p\b|\bset\s*(?:$|[;&|])|:\/\/[^\s:@\/]+:[^\s@\/]+@/im
