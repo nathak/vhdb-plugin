@@ -47,7 +47,7 @@ test('nothing to fingerprint -> null; noise lines alone are skipped', () => {
 test('check classification and keys', () => {
   assert.deepEqual(classify('npm test'), { check: 'test', key: 'npm test', cwd: '', masked: false, compound: false })
   assert.equal(classify('cd app && NODE_ENV=test pnpm run test -- --watch=false').check, 'test')
-  assert.equal(classify('cd app && NODE_ENV=test pnpm run test -- --watch=false').key, 'pnpm run test -- --watch=false')
+  assert.equal(classify('cd app && NODE_ENV=test pnpm run test -- --watch=false').key, 'NODE_ENV=test pnpm run test -- --watch=false') // env vars are part of the key
   assert.equal(classify('cargo clippy --all-targets').check, 'lint')
   assert.equal(classify('npx tsc --noEmit').check, 'typecheck')
   assert.equal(classify('cargo build --release').check, 'build')
@@ -89,4 +89,22 @@ test('review cases: ";" and "&" hide the status, compound commands are keyed as 
 test('npm banner lines do not become the message', () => {
   const f = fingerprint('Exit code 1\n> pkg@1.2.3 build\n> tsc -p .\nerror TS2304: Cannot find name foo.', {})
   assert.equal(f.type, 'TS2304')
+})
+
+test('tsc and python locations are found; the message is the line that is the error, not one that mentions it', () => {
+  const tsc = fingerprint("src/a.ts(10,5): error TS2345: Argument of type 'string' is not assignable.", {})
+  assert.deepEqual(tsc.loc, ['src/a.ts:10'])
+  assert.equal(tsc.file, 'src/a.ts')
+  const py = (n, test) => `Traceback (most recent call last):\n  File "app/x.py", line ${n}, in f\n    with pytest.raises(ValueError):\n${test}\nE   KeyError: 'token'`
+  assert.equal(fingerprint(py(12, 'x'), {}).type, 'KeyError')
+  assert.equal(fingerprint(py(12, 'x'), {}).fp, fingerprint(py(77, 'y'), {}).fp)
+  assert.equal(fingerprint(py(12, 'x'), {}).file, 'app/x.py')
+})
+
+test('jest and node --test (TAP) failures of different tests do not collapse into one key', () => {
+  const jest = name => `FAIL src/a.test.js\n  ● ${name}\n\n    expect(received).toBe(expected)\n\n    Expected: 2\n    Received: 1`
+  assert.notEqual(fingerprint(jest('auth refresh'), {}).fp, fingerprint(jest('auth logout'), {}).fp)
+  const tap = name => `not ok 1 - ${name}\n  ---\n  duration_ms: 1.2\n  type: 'test'\n  location: 'x.test.mjs:3:1'\n  failureType: 'testCodeFailure'\n  error: 'Expected values to be strictly equal:'\n  code: 'ERR_ASSERTION'\n  name: 'AssertionError'\n  ...`
+  assert.notEqual(fingerprint(tap('refresh works'), {}).fp, fingerprint(tap('logout works'), {}).fp)
+  assert.equal(fingerprint(tap('refresh works'), {}).fp, fingerprint(tap('refresh works').replace('1.2', '9.9'), {}).fp)
 })

@@ -200,7 +200,7 @@ test('T1: previous turn\'s unresolved error comes first; the deadline cuts only 
   const started = performance.now()
   const out = await handle({ hook_event_name: 'UserPromptSubmit', session_id: 's1', cwd: t.repo, prompt: 'src/auth.js 계속' }, slow, { t0: started })
   assert.ok(performance.now() - started < 500, `took ${performance.now() - started}ms`)
-  assert.match(out.additionalContext, /<error fp="[0-9a-f]{16}" seen="1"[^>]*status="open">TypeError/)
+  assert.match(out.additionalContext, /<error fp="[0-9a-f]{16}" seen="1"[^>]*status="open"[^>]*>TypeError/)
   const rows = readFileSync(join(t.env.VHDB_DIR, 'state', 'timing.jsonl'), 'utf8').trim().split('\n').map(JSON.parse)
   assert.equal(rows.at(-1).layer4, 'late')
 })
@@ -215,7 +215,7 @@ test('T2: a failure seen before is annotated right away with how it was fixed; o
   await t.ev('UserPromptSubmit', 's1', { prompt: '다시' })
   const again = await t.ev('PostToolUseFailure', 's1', failure(t, 'npm test', 99))
   assert.equal(again.event, 'PostToolUseFailure')
-  assert.match(again.additionalContext, /status="resolved" confidence="observed" files="src\/auth.js"/)
+  assert.match(again.additionalContext, /status="resolved" src="tool-output" confidence="observed" files="src\/auth.js"/)
   assert.match(again.additionalContext, /<decision id="d-aaaaaaaaaa"/)
   assert.equal(await t.ev('PostToolUseFailure', 's1', failure(t, 'npm test', 12)), undefined) // same turn
 })
@@ -301,4 +301,61 @@ test('hook samples are masked and a crash between append and state save never re
   const r = spawnSync('node', [RUN], { input: JSON.stringify({ hook_event_name: 'UserPromptSubmit', session_id: 'z', cwd: t.repo, prompt: 'key sk-abcdefghijklmnopqrstuvwxyz' }), env: { ...process.env, ...t.env, VHDB_HOOK_SAMPLES: '1' } })
   assert.equal(r.status, 0)
   assert.ok(!readFileSync(join(t.env.VHDB_DIR, 'state', 'hook-samples.jsonl'), 'utf8').includes('sk-abcdef'))
+})
+
+test('review round 2: sensitive commands keep no key; AWS-style names and Authorization headers are masked', async () => {
+  const t = setup()
+  await t.ev('PostToolUseFailure', 's1', { tool_name: 'Bash', tool_use_id: 'a', tool_input: { command: 'mysql -pHunter2Secret db < .env' }, error: 'Exit code 1\nAccess denied' })
+  const e = t.log('s1')[0]
+  assert.equal(e.key, '(비공개)')
+  assert.ok(!JSON.stringify(e).includes('Hunter2Secret') && !JSON.stringify(readErrors(t.env)).includes('Hunter2Secret'))
+  const t2 = setup()
+  await t2.ev('PostToolUseFailure', 's1', { tool_name: 'Bash', tool_use_id: 'b', tool_input: { command: 'AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMIK7MDENGbPxRfiCY aws s3 ls' }, error: 'Exit code 255\nAuthorization: Basic dXNlcjpwYXNzd29yZA== sk_live_abcdefghijklmnop' })
+  const all = JSON.stringify(t2.log('s1')) + JSON.stringify(readErrors(t2.env))
+  for (const secret of ['wJalrXUtn', 'dXNlcjpw', 'sk_live_abcdef']) assert.ok(!all.includes(secret), secret)
+})
+
+test('review round 2: missing wasm does not remove the decision and error layers; record off + inject on shows decisions only', async () => {
+  const t = setupInject()
+  await search('토큰', { env: t.env }) // so a MANIFEST exists and the worker path is attempted
+  const out = await t.ev('UserPromptSubmit', 's1', { prompt: 'src/auth.js 수정' })
+  assert.ok(out)
+  const noWasm = await handle({ hook_event_name: 'UserPromptSubmit', session_id: 's7', cwd: t.repo, prompt: 'src/auth.js 수정' }, { ...t.env, VHDB_WASM: '/nope.wasm' }, { t0: performance.now() })
+  assert.match(noWasm.additionalContext, /d-aaaaaaaaaa/)
+  const rows = readFileSync(join(t.env.VHDB_DIR, 'state', 'timing.jsonl'), 'utf8').trim().split('\n').map(JSON.parse)
+  assert.equal(rows.at(-1).layer4, 'error')
+
+  const off = setupInject()
+  setConfig(false, ['record'], off.env)
+  const o = await off.ev('UserPromptSubmit', 's1', { prompt: 'src/auth.js 수정' })
+  assert.match(o.additionalContext, /<decision/)
+  assert.ok(!o.additionalContext.includes('<error'))
+})
+
+test('review round 2: a one-off runtime failure is not carried into the next prompt', async () => {
+  const t = setupInject()
+  await t.ev('UserPromptSubmit', 's1', { prompt: 'x' })
+  await t.ev('PostToolUseFailure', 's1', failure(t, 'node scripts/run.js'))
+  await t.ev('Stop', 's1')
+  const out = await t.ev('UserPromptSubmit', 's1', { prompt: '다른 일을 해줘' })
+  assert.ok(!out || !out.additionalContext.includes('<error'))
+})
+
+test('review round 2: T2 is remembered so the next T1 does not repeat it; chat layer works against a real index', async () => {
+  const t = setupInject()
+  await t.ev('UserPromptSubmit', 's1', { prompt: 'x' })
+  await t.ev('PostToolUseFailure', 's1', failure(t))
+  await t.ev('PostToolUse', 's1', { tool_name: 'Bash', tool_input: { command: 'npm test' }, tool_response: {} })
+  await t.ev('UserPromptSubmit', 's1', { prompt: 'y' })
+  const t2 = await t.ev('PostToolUseFailure', 's1', failure(t, 'npm test', 70))
+  assert.ok(t2)
+  const state = JSON.parse(readFileSync(join(t.env.VHDB_DIR, 'state', 'sess-s1.json'), 'utf8'))
+  assert.ok(Object.keys(state.injected).some(k => k.startsWith('e:')))
+  // chat layer against a real engine: an earlier prompt shares two or more words with the new one
+  const l = (await import('./fixture.mjs')).makeLedger()
+  l.add({ v: 1, seq: 101, at: Date.parse('2026-09-01T00:00:00Z'), session: 'old1', turn: 1, kind: 'prompt', text: '캐시 무효화 전략을 정하자 invalidation' })
+  setConfig(true, ['inject'], l.env)
+  await search('캐시', { env: l.env })
+  const out = await handle({ hook_event_name: 'UserPromptSubmit', session_id: 'c1', cwd: t.repo, prompt: '캐시 무효화 전략이 뭐였지' }, { ...l.env, VHDB_PROJECT_DIR: t.repo }, { t0: performance.now() })
+  assert.match(out.additionalContext, /<history kind="prompt" at="2026-09-01">캐시 무효화 전략을/)
 })
