@@ -420,3 +420,16 @@ test('rebuild-cache: events without a scope take it from the existing cache', ()
   assert.equal(readErrors(t.env)[err.fp].scope, scope)
   assert.equal(stats.noScope, 0)
 })
+
+test('Stop trims the error cache to open errors plus the recent ones; rebuild-cache applies the same rule', () => {
+  const t = setup()
+  t.ev('PostToolUseFailure', 's1', failure(t))
+  const live = readErrors(t.env)
+  const [fp] = Object.keys(live)
+  const old = { ...live[fp], open: false, last: Date.now() - 200 * 86400000, first: 1 }
+  const many = { [fp]: live[fp] }
+  for (let i = 0; i < 5; i++) many[`old${i}`] = old
+  writeFileSync(errorsFile(t), JSON.stringify(many))
+  t.ev('Stop', 's1')
+  assert.deepEqual(Object.keys(readErrors(t.env)), [fp])
+})
