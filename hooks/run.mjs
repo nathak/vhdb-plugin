@@ -18,7 +18,8 @@ process.stdin.on('end', async () => {
       appendFileSync(join(dir, 'hook-samples.jsonl'), `${redact(raw.trim())}\n`)
     }
     const out = await handle(input)
-    if (out?.additionalContext) process.stdout.write(`${JSON.stringify({ hookSpecificOutput: { hookEventName: out.event, additionalContext: out.additionalContext } })}\n`)
+    if (out?.permissionDecision) process.stdout.write(`${JSON.stringify({ hookSpecificOutput: { hookEventName: out.event, permissionDecision: out.permissionDecision, permissionDecisionReason: out.permissionDecisionReason } })}\n`)
+    else if (out?.additionalContext) process.stdout.write(`${JSON.stringify({ hookSpecificOutput: { hookEventName: out.event, additionalContext: out.additionalContext } })}\n`)
   } catch (e) {
     if (process.env.VHDB_DEBUG) console.error(`vhdb hook: ${e.stack ?? e}`)
   }

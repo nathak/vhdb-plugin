@@ -9,7 +9,7 @@ import { mkdirSync } from 'node:fs'
 import { lock, withSession } from '../lib/log.mjs'
 import { normalizeFile, vhdbDir } from '../lib/locate.mjs'
 import { redact } from '../lib/redact.mjs'
-import { SWITCHES, describeConfig, readConfig, setConfig } from '../lib/config.mjs'
+import { SWITCHES, describeConfig, describeMisses, readConfig, setConfig } from '../lib/config.mjs'
 import { formatHistory, formatSearch } from '../lib/format.mjs'
 
 const VERSION = '0.1.0'
@@ -156,7 +156,7 @@ async function callTool(name, args = {}) {
     if (!['on', 'off', 'status'].includes(args.action)) throw new RpcError(-32602, 'action은 on|off|status')
     const targets = args.targets ?? []
     if (!Array.isArray(targets) || targets.some(t => typeof t !== 'string')) throw new RpcError(-32602, 'targets는 문자열 배열')
-    run = async () => describeConfig(args.action === 'status' ? readConfig() : setConfig(args.action === 'on', targets))
+    run = async () => (args.action === 'status' ? describeConfig(readConfig()) + describeMisses() : describeConfig(setConfig(args.action === 'on', targets)))
   } else {
     throw new RpcError(-32602, `모르는 툴: ${name}`)
   }

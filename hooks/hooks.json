@@ -3,8 +3,11 @@
     "UserPromptSubmit": [
       { "hooks": [{ "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/run.mjs\"", "timeout": 10 }] }
     ],
+    "PreToolUse": [
+      { "matcher": "Edit|Write|MultiEdit|NotebookEdit", "hooks": [{ "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/run.mjs\"", "timeout": 5 }] }
+    ],
     "PostToolUse": [
-      { "matcher": "Edit|Write|MultiEdit|NotebookEdit|Bash", "hooks": [{ "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/run.mjs\"", "timeout": 10 }] }
+      { "matcher": "Edit|Write|MultiEdit|NotebookEdit|Bash|mcp__.*query_history", "hooks": [{ "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/run.mjs\"", "timeout": 10 }] }
     ],
     "PostToolUseFailure": [
       { "matcher": "Bash", "hooks": [{ "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/run.mjs\"", "timeout": 10 }] }

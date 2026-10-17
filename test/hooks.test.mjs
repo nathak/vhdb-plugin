@@ -7,7 +7,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import { fileURLToPath } from 'node:url'
 import { search } from '../lib/client.mjs'
-import { setConfig } from '../lib/config.mjs'
+import { missStats, setConfig } from '../lib/config.mjs'
 import { handle, readErrors, rebuildErrors } from '../lib/hooks.mjs'
 
 const RUN = fileURLToPath(new URL('../hooks/run.mjs', import.meta.url))
@@ -432,4 +432,58 @@ test('Stop trims the error cache to open errors plus the recent ones; rebuild-ca
   writeFileSync(errorsFile(t), JSON.stringify(many))
   t.ev('Stop', 's1')
   assert.deepEqual(Object.keys(readErrors(t.env)), [fp])
+})
+
+// ---- T3 guard and injection misses ----
+
+const edit = (t, file = 'src/auth.js') => ({ tool_name: 'Edit', tool_input: { file_path: join(t.repo, file) } })
+
+test('T3: first edit of a file with a decision is denied once per turn and file; the retry and other files pass', async () => {
+  const t = setupInject()
+  setConfig(true, ['guard'], t.env)
+  await t.ev('UserPromptSubmit', 's1', { prompt: 'unrelated words' })
+  const first = await t.ev('PreToolUse', 's1', edit(t))
+  assert.equal(first.permissionDecision, 'deny')
+  assert.match(first.permissionDecisionReason, /사용자의 거부가 아니다/)
+  assert.match(first.permissionDecisionReason, /<decision id="d-aaaaaaaaaa"/)
+  assert.equal(await t.ev('PreToolUse', 's1', edit(t)), undefined)
+  assert.equal(await t.ev('PreToolUse', 's1', edit(t, 'src/other.js')), undefined)
+  await t.ev('UserPromptSubmit', 's1', { prompt: 'unrelated words' })
+  assert.equal(await t.ev('PreToolUse', 's1', edit(t)), undefined) // shown one turn ago: not repeated yet
+  for (let i = 0; i < 3; i++) await t.ev('UserPromptSubmit', 's1', { prompt: 'unrelated words' })
+  assert.equal((await t.ev('PreToolUse', 's1', edit(t))).permissionDecision, 'deny') // 3 turns later: again
+})
+
+test('T3: nothing when guard is off, when T1 already showed the decision this turn, or for a new file', async () => {
+  const t = setupInject()
+  assert.equal(await t.ev('PreToolUse', 's1', edit(t)), undefined) // guard off
+  setConfig(true, ['guard'], t.env)
+  const shown = await t.ev('UserPromptSubmit', 's2', { prompt: 'src/auth.js 고쳐줘' })
+  assert.ok(shown.additionalContext)
+  assert.equal(await t.ev('PreToolUse', 's2', edit(t)), undefined)
+  assert.equal(await t.ev('PreToolUse', 's3', { tool_name: 'Write', tool_input: { file_path: join(t.repo, 'src/new.js') } }), undefined)
+})
+
+test('T3: guard works without record or inject, and run.mjs prints the deny decision', () => {
+  const t = setupInject()
+  setConfig(false, ['inject'], t.env)
+  setConfig(true, ['guard'], t.env)
+  const r = spawnSync('node', [RUN], { env: { ...process.env, ...t.env }, input: JSON.stringify({ hook_event_name: 'PreToolUse', session_id: 's1', cwd: t.repo, ...edit(t) }), encoding: 'utf8' })
+  assert.equal(r.status, 0)
+  const out = JSON.parse(r.stdout).hookSpecificOutput
+  assert.equal(out.hookEventName, 'PreToolUse')
+  assert.equal(out.permissionDecision, 'deny')
+})
+
+test('misses: a query_history turn is logged once with what had been shown; status reports the rate', async () => {
+  const t = setupInject()
+  const q = { tool_name: 'mcp__plugin_vhdb_vhdb__query_history', tool_input: { query: 'x' } }
+  await t.ev('UserPromptSubmit', 's1', { prompt: 'src/auth.js 고쳐줘' }) // shows the decision
+  await t.ev('PostToolUse', 's1', q)
+  await t.ev('PostToolUse', 's1', q) // same turn: not counted twice
+  await t.ev('UserPromptSubmit', 's1', { prompt: 'zzz qqq' }) // nothing shown
+  await t.ev('PostToolUse', 's1', q)
+  const rows = readFileSync(join(t.env.VHDB_DIR, 'state', 'misses.jsonl'), 'utf8').split('\n').filter(Boolean).map(l => JSON.parse(l))
+  assert.deepEqual(rows.map(r => r.shown > 0), [true, false])
+  assert.deepEqual(missStats(t.env), { searched: 2, misses: 1, rate: 0.5 })
 })
