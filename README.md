@@ -36,4 +36,4 @@ smart-workbench는 수정하지 않는다. 원장은 읽기만 하고, 엔진 �
 - smart-workbench의 `swb-ledger`에는 아무것도 쓰지 않는다. 엔진 파일과 자기 로그는 `<git common dir>/vhdb/`에 둔다.
 
 실측(실제 Claude Code, 결정 1건·해결 오류 1건 저장소): T1 총 75~81ms(레이어 1~3 약 40ms), 주입 172토큰.
-알려진 한계: `errors.json`은 로그에서 다시 만드는 명령(`rebuild-cache`)이 아직 없다. 훅이 `errors.json`을 갱신한 직후 로그 기록 전에 죽으면 둘이 어긋날 수 있다.
+`errors.json`은 로그에서 다시 만들 수 있다: `node bin/vhdb.mjs rebuild-cache`. 훅은 로그에 먼저 쓰고 `errors.json`을 나중에 갱신하므로, 중간에 죽어도 로그가 앞서 있을 뿐이고 이 명령이 맞춘다. 알려진 한계: scope가 없던 옛 로그의 오류는 기존 `errors.json`에 같은 지문이 있을 때만 scope를 되살리고, 그렇지 않으면 통과로 닫히지 않는다. 서로 다른 세션이 같은 ms에 같은 오류를 실패/해결하면 재생 순서가 실제와 다를 수 있다.

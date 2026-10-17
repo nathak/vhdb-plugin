@@ -8,7 +8,7 @@ import test from 'node:test'
 import { fileURLToPath } from 'node:url'
 import { search } from '../lib/client.mjs'
 import { setConfig } from '../lib/config.mjs'
-import { handle, readErrors } from '../lib/hooks.mjs'
+import { handle, readErrors, rebuildErrors } from '../lib/hooks.mjs'
 
 const RUN = fileURLToPath(new URL('../hooks/run.mjs', import.meta.url))
 
@@ -368,4 +368,55 @@ test('without the core wasm a hook does nothing, quietly: exit 0, no output, not
   const f = spawnSync('node', [RUN], { input: JSON.stringify({ hook_event_name: 'PostToolUseFailure', session_id: 'w1', cwd: t.repo, ...failure(t) }), env: { ...process.env, ...t.env, VHDB_WASM: '/nope.wasm' } })
   assert.equal(f.status, 0)
   assert.deepEqual(t.log('w1'), [])
+})
+
+const errorsFile = t => join(t.env.VHDB_DIR, 'state', 'errors.json')
+const editAndPass = t => {
+  t.ev('PostToolUse', 's1', { tool_name: 'Edit', tool_input: { file_path: join(t.repo, 'src/auth.js') } })
+  t.ev('PostToolUse', 's1', { tool_name: 'Bash', tool_input: { command: 'npm test' }, tool_response: { stdout: 'ok' } })
+}
+
+test('rebuild-cache: the cache rebuilt from the log equals the live one', () => {
+  const t = setup()
+  t.ev('UserPromptSubmit', 's1', { prompt: 'a' })
+  t.ev('PostToolUseFailure', 's1', failure(t))
+  t.ev('PostToolUseFailure', 's2', failure(t))
+  editAndPass(t)
+  t.ev('PostToolUseFailure', 's1', failure(t, 'npm test', 99))
+  const live = readErrors(t.env)
+  assert.ok(Object.keys(live).length >= 1)
+  writeFileSync(errorsFile(t), '{}')
+  const stats = rebuildErrors(t.env)
+  assert.deepEqual(readErrors(t.env), live)
+  assert.equal(stats.noScope, 0)
+})
+
+test('rebuild-cache: a crash between the log line and the cache is repaired; a torn last line is ignored', () => {
+  const t = setup()
+  t.ev('PostToolUseFailure', 's1', failure(t))
+  const [err] = t.log('s1')
+  const before = readErrors(t.env)
+  // simulate: the hook logged a second failure, then died before updating errors.json
+  const lost = { ...err, seq: 99, at: err.at + 5, fp: 'ffffffffffffffff' }
+  const logPath = join(t.env.VHDB_DIR, 'log', 'vhdb-s1.jsonl')
+  appendFileSync(logPath, `${JSON.stringify(lost)}\n{"kind":"error","fp":"torn`)
+  assert.equal(readErrors(t.env).ffffffffffffffff, undefined)
+  rebuildErrors(t.env)
+  const after = readErrors(t.env)
+  assert.equal(after.ffffffffffffffff.open, true)
+  assert.deepEqual(after[err.fp], before[err.fp])
+  assert.equal(Object.keys(after).length, 2)
+})
+
+test('rebuild-cache: events without a scope take it from the existing cache', () => {
+  const t = setup()
+  t.ev('PostToolUseFailure', 's1', failure(t))
+  const [err] = t.log('s1')
+  const scope = readErrors(t.env)[err.fp].scope
+  const logPath = join(t.env.VHDB_DIR, 'log', 'vhdb-s1.jsonl')
+  const { scope: _drop, ...old } = err
+  writeFileSync(logPath, `${JSON.stringify(old)}\n`)
+  const stats = rebuildErrors(t.env)
+  assert.equal(readErrors(t.env)[err.fp].scope, scope)
+  assert.equal(stats.noScope, 0)
 })

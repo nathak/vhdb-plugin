@@ -1,6 +1,7 @@
 #!/usr/bin/env node
-// Human/test CLI: vhdb.mjs search <VQL...> | history <file> | stat   [--json] [--limit N] [--any]
+// Human/test CLI: vhdb.mjs search <VQL...> | history <file> | stat | rebuild-cache   [--json] [--limit N] [--any]
 import { history, search, stat } from '../lib/client.mjs'
+import { rebuildErrors } from '../lib/hooks.mjs'
 import { formatHistory, formatSearch, redact } from '../lib/format.mjs'
 
 const argv = process.argv.slice(2)
@@ -27,8 +28,11 @@ try {
   } else if (verb === 'stat') {
     result = await stat()
     text = () => JSON.stringify(result.answer)
+  } else if (verb === 'rebuild-cache') {
+    console.log(`errors.json rebuilt from the log: ${JSON.stringify(rebuildErrors(process.env))}`)
+    process.exit(0)
   } else {
-    console.error('usage: vhdb.mjs search <VQL...> | history <file> | stat  [--json] [--limit N] [--any]')
+    console.error('usage: vhdb.mjs search <VQL...> | history <file> | stat | rebuild-cache  [--json] [--limit N] [--any]')
     process.exit(2)
   }
   console.log(json ? JSON.stringify(result, (_k, v) => (typeof v === 'string' ? redact(v) : v)) : text())
