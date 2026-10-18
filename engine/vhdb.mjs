@@ -236,7 +236,7 @@ export function run(engine, argv) {
     const limit = Number(flag('--limit') ?? 5)
     return engine.call(`history ${limit} ${rest.join(' ')}`)
   }
-  return WRITES.has(verb) ? withLock(engine.root, () => engine.call(verb)) : engine.call(verb)
+  return WRITES.has(verb) ? withLock(engine.root, () => engine.call(verb === 'ingest' ? `ingest ${Date.now()}` : verb)) : engine.call(verb)
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
