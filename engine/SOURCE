@@ -1,4 +1,4 @@
-vhdb commit: e0581f2d70a56f3e29acf75e958f67402e6260ce
+vhdb commit: 91f2937fe812d6e6bfc8d40bb722627505035228
 built with: zig cc wrapper (not reproducible CI build)
-92a5392e3ba79d372f77eaa127eb79b3c2fe4f230d963515f4fb13fcd119c165  vhdb.mjs
-c79fa4dbda565caf66d7939a48df5c540e093796931486824d9b9305708adf81  vhdb.wasm
+84378839e9f4aba4bbac9c40da1f625e509fb983e89a58ffacda4fb4469ba72b  vhdb.mjs
+b9933a834bdd60882b83c5e6b50823b0e098fb9f4414d95f45cb720d991f7cc3  vhdb.wasm
