@@ -182,6 +182,16 @@ export async function open(root, wasmPath = join(dirname(fileURLToPath(import.me
   }
 }
 
+// True when the file was written before this machine last booted (/proc/stat `btime`); false where that is unknown.
+function wroteBeforeBoot(path) {
+  try {
+    const btime = Number(/^btime (\d+)$/m.exec(readFileSync('/proc/stat', 'utf8'))?.[1])
+    return Number.isFinite(btime) && Math.floor(statSync(path).mtimeMs / 1000) + 1 < btime
+  } catch {
+    return false
+  }
+}
+
 // The writer lock: create LOCK exclusively; a lock left by a dead process on this host is taken over.
 export function withLock(root, fn) {
   const path = join(resolve(root), 'LOCK')
@@ -201,7 +211,9 @@ export function withLock(root, fn) {
       const held = readFileSync(path, 'utf8').trim()
       const [pid, host] = held.split('@')
       let alive = host !== hostname()
-      if (!alive) {
+      if (!alive && wroteBeforeBoot(path)) {
+        // a lock from before the last boot is dead even if its pid is in use again
+      } else if (!alive) {
         try {
           process.kill(Number(pid), 0)
           alive = true
