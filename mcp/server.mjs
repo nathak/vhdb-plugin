@@ -11,6 +11,7 @@ import { normalizeFile, vhdbDir } from '../lib/locate.mjs'
 import { redact } from '../lib/redact.mjs'
 import { SWITCHES, describeConfig, describeMisses, readConfig, setConfig } from '../lib/config.mjs'
 import { formatHistory, formatSearch } from '../lib/format.mjs'
+import { describeUpload } from '../lib/remote.mjs'
 
 const VERSION = '0.1.0'
 const SUPPORTED = ['2025-06-18', '2025-03-26', '2024-11-05']
@@ -67,12 +68,12 @@ const TOOLS = [
   },
   {
     name: 'vhdb_config',
-    description: 'VHDB 스위치를 켜거나 끄거나 보여 준다: record(훅 기록), inject(맥락 주입), guard(편집 전 확인). 기본은 모두 꺼짐.',
+    description: 'VHDB 스위치를 켜거나 끄거나 보여 준다: record(훅 기록), inject(맥락 주입), guard(편집 전 확인), upload(팀 서버로 업로드: 끄기만 가능, 켜기는 사람이 터미널에서). 기본은 모두 꺼짐.',
     inputSchema: {
       type: 'object',
       properties: {
         action: { type: 'string', enum: ['on', 'off', 'status'] },
-        targets: { type: 'array', items: { type: 'string', enum: ['all', ...SWITCHES] }, maxItems: 4, description: '비우면 all(record+inject)' },
+        targets: { type: 'array', items: { type: 'string', enum: ['all', ...SWITCHES] }, maxItems: 5, description: '비우면 all(record+inject). upload는 all에 포함되지 않음' },
       },
       required: ['action'],
       additionalProperties: false,
@@ -156,7 +157,11 @@ async function callTool(name, args = {}) {
     if (!['on', 'off', 'status'].includes(args.action)) throw new RpcError(-32602, 'action은 on|off|status')
     const targets = args.targets ?? []
     if (!Array.isArray(targets) || targets.some(t => typeof t !== 'string')) throw new RpcError(-32602, 'targets는 문자열 배열')
-    run = async () => (args.action === 'status' ? describeConfig(readConfig()) + describeMisses() : describeConfig(setConfig(args.action === 'on', targets)))
+    if (args.action === 'on' && targets.includes('upload')) {
+      // Sending history off the machine is switched on by a person at a terminal, never by the model.
+      throw new RpcError(-32602, 'upload 는 여기서 켤 수 없음: 터미널에서 `node bin/vhdb.mjs remote on` (서버 주소·토큰은 `remote set`)')
+    }
+    run = async () => (args.action === 'status' ? describeConfig(readConfig()) + describeUpload(process.env, readConfig()) + describeMisses() : describeConfig(setConfig(args.action === 'on', targets)))
   } else {
     throw new RpcError(-32602, `모르는 툴: ${name}`)
   }

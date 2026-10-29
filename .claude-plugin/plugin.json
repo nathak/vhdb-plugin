@@ -1,6 +1,6 @@
 {
   "name": "vhdb",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "VHDB 이력 검색: /vhdb search·history, query_history 툴",
   "author": { "name": "nathak" }
 }
