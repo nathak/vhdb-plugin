@@ -5,7 +5,7 @@ import { createHash } from 'node:crypto'
 import { fn } from '../lib/core.mjs'
 import { readDecisions } from '../lib/decisions.mjs'
 import { join } from 'node:path'
-import { mkdirSync } from 'node:fs'
+import { mkdirSync, readFileSync } from 'node:fs'
 import { lock, withSession } from '../lib/log.mjs'
 import { normalizeFile, vhdbDir } from '../lib/locate.mjs'
 import { redact } from '../lib/redact.mjs'
@@ -13,7 +13,13 @@ import { SWITCHES, describeConfig, describeMisses, readConfig, setConfig } from 
 import { formatHistory, formatSearch } from '../lib/format.mjs'
 import { describeUpload } from '../lib/remote.mjs'
 
-const VERSION = '0.1.0'
+const VERSION = (() => {
+  try {
+    return JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version
+  } catch {
+    return '0'
+  }
+})()
 const SUPPORTED = ['2025-06-18', '2025-03-26', '2024-11-05']
 
 const VQL = [

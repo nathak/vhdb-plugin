@@ -1,0 +1,12 @@
+{
+  "name": "vhdb",
+  "description": "VHDB: search the history of vibe-coding sessions (decisions, errors and fixes, edits, commits)",
+  "owner": { "name": "nathak" },
+  "plugins": [
+    {
+      "name": "vhdb",
+      "description": "VHDB 이력 검색: /vhdb search·history, query_history 툴",
+      "source": "./"
+    }
+  ]
+}

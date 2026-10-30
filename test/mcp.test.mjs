@@ -1,4 +1,5 @@
 import { spawn } from 'node:child_process'
+import { readFileSync } from 'node:fs'
 import assert from 'node:assert/strict'
 import test, { after } from 'node:test'
 import { fileURLToPath } from 'node:url'
@@ -46,6 +47,7 @@ test('MCP round trip', async () => {
   assert.equal(r.result.protocolVersion, '2025-06-18')
   assert.ok(r.result.capabilities.tools)
   assert.equal(r.result.serverInfo.name, 'vhdb')
+  assert.equal(r.result.serverInfo.version, JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version)
 
   s.send({ jsonrpc: '2.0', method: 'notifications/initialized' }) // no reply allowed
   s.send({ jsonrpc: '2.0', id: 'two', method: 'ping' })

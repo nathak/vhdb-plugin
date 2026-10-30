@@ -28,11 +28,27 @@
 
 ## 2. 설치
 
-```sh
-claude --plugin-dir <이 저장소를 클론한 경로>
+Claude Code 안에서 마켓플레이스로 설치합니다. 저장소를 클론할 필요가 없습니다.
+
+```
+/plugin marketplace add nathak/vhdb-plugin
+/plugin install vhdb@vhdb
 ```
 
 플러그인 이름이 `vhdb`라서 슬래시 명령은 `/vhdb:…`, MCP 서버는 `vhdb`로 나타납니다. 엔진(`engine/vhdb.wasm`)이 저장소에 들어 있어 따로 빌드할 필요가 없습니다.
+
+새 버전은 `/plugin`에서 마켓플레이스와 플러그인을 업데이트하면 받고, Claude Code를 다시 시작하면 적용됩니다(서드파티 마켓플레이스는 자동 갱신이 기본으로 꺼져 있습니다). 업데이트하면 설치 폴더가 새 버전으로 바뀌므로 아래 `VHDB_BIN`을 다시 구하세요.
+
+**같은 이름의 예전 설치가 있다면 먼저 지웁니다.** 로컬 마켓플레이스 등으로 `vhdb`를 이미 설치했다면(`/plugin`에서 `vhdb@…`가 보이면) `/plugin uninstall`로 지우고 그 마켓플레이스도 `marketplace remove`한 뒤 설치하세요. 두 개가 함께 켜지면 훅이 두 번 돌아 기록이 중복됩니다.
+
+**터미널에서 쓰는 `node bin/vhdb.mjs`**: 설치하면 플러그인은 `~/.claude/plugins/cache/` 아래 버전별 폴더에 들어가므로, 이 문서의 `node bin/vhdb.mjs …`는 아래처럼 경로를 찾아 `node "$VHDB_BIN" …`로 바꿔 씁니다. **시험할 저장소 안의 진짜 터미널**에서 실행하세요(현재 디렉터리로 프로젝트를 찾고, `remote set`은 토큰을 표준입력으로, `remote on`은 터미널에서만 받습니다. Claude Code의 `!` 모드는 안 됩니다).
+
+```sh
+VHDB_BIN="$(node -e 'const d=process.env.CLAUDE_CONFIG_DIR||require("os").homedir()+"/.claude";const e=(require(d+"/plugins/installed_plugins.json").plugins["vhdb@vhdb"]||[])[0];if(!e)process.exit(1);console.log(e.installPath+"/bin/vhdb.mjs")')"
+node "$VHDB_BIN" remote show
+```
+
+저장소를 직접 받아 개발하거나 시험할 때는 `claude --plugin-dir <클론한 경로>`로 띄웁니다. 이때는 클론한 경로에서 `node bin/vhdb.mjs …`를 그대로 씁니다.
 
 ## 3. 명령
 
@@ -207,6 +223,8 @@ engine/                       vhdb.mjs(호스트) + vhdb.wasm + SOURCE
 
 ## 11. 엔진 동기화
 
+릴리스할 때마다 `.claude-plugin/plugin.json`의 버전을 올려야 합니다(설치본이 버전 단위로 저장되므로, 올리지 않으면 업데이트가 내려가지 않습니다). `package.json`과 같은 값으로 맞추며, `test/manifest.test.mjs`가 둘이 같은지 검사합니다.
+
 ```sh
 scripts/sync-engine.sh <vhdb 저장소 경로> <vhdb.wasm 경로>
 ```
@@ -248,7 +266,7 @@ npm test        # node --test "test/*.test.mjs": 훅, MCP, 클라이언트, 로�
 | 증상 | 원인과 해결 |
 | --- | --- |
 | `읽을 이력이 없음: …` | smart-workbench에서 `/swb ledger on` 하거나 `/vhdb:on record`로 기록을 켠 뒤 사용 |
-| `vhdb.wasm 없음: …` | `engine/vhdb.wasm`이 없음. `scripts/sync-engine.sh`로 동기화하거나 `VHDB_WASM`으로 지정 |
+| `vhdb.wasm 없음: …` | `engine/vhdb.wasm`이 없음. 마켓플레이스로 설치했다면 플러그인을 다시 설치하세요. 개발 중이면 `scripts/sync-engine.sh`로 동기화하거나 `VHDB_WASM`으로 지정 |
 | `git 저장소가 아님: …` | git 저장소 안에서 실행해야 합니다. `VHDB_PROJECT_DIR`로 지정할 수도 있음 |
 | 훅이 아무 일도 안 하는 것 같다 | `/vhdb:status`로 스위치 확인. `VHDB_DEBUG`를 주고 예외를 확인 |
 | 주입이 느리다/빠진다 | `state/timing.jsonl`의 `ms`·`skipped` 확인. `deadlineMs`·`budgetTokens`를 조정 |
@@ -257,6 +275,8 @@ npm test        # node --test "test/*.test.mjs": 훅, MCP, 클라이언트, 로�
 ## 16. 팀 서버로 업로드
 
 선택 기능이고 **기본은 꺼짐**입니다. 켜면 이 저장소의 이력이 팀 서버(`vhdb-server`)의 한 프로젝트로 올라가, 같은 프로젝트의 사람들이 서로의 이력을 검색할 수 있습니다. 서버 문서: [`nathak/vhdb-public`의 README](https://github.com/nathak/vhdb-public#8-팀-서버-vhdb-server).
+
+이 절의 `node bin/vhdb.mjs …`는 마켓플레이스로 설치했다면 `node "$VHDB_BIN" …`입니다([2. 설치](#2-설치)). 시험할 저장소 안의 터미널에서 실행하세요.
 
 ### 무엇이 나가나
 
