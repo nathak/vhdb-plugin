@@ -2,7 +2,7 @@ import http from 'node:http'
 import { spawn, spawnSync } from 'node:child_process'
 import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs'
 import { hostname, tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { isAbsolute, join } from 'node:path'
 import assert from 'node:assert/strict'
 import test, { after } from 'node:test'
 import { fileURLToPath } from 'node:url'
@@ -711,4 +711,65 @@ test('readWindow reads whole lines only and starts over for a replaced file', ()
   assert.equal(readWindow(p, w.end).events.length, 0)
   assert.equal(readWindow(p, 10_000_000).start, 0, 'the file is shorter than the offset: it was replaced')
   assert.equal(dryRun({ ...r.env }).ok, false, 'no server configured')
+})
+
+test('a newest line without its newline (smart-workbench writes the newline first) is read once it parses, and blank lines are skipped', () => {
+  const r = repo(null, { on: false })
+  const p = join(r.swb, 'n.jsonl')
+  const a = JSON.stringify(ev('nl000001-aaaa', 1))
+  const b = JSON.stringify(ev('nl000001-aaaa', 2))
+  writeFileSync(p, `\n${a}\n\n${b}`)
+  const w = readWindow(p, 0)
+  assert.deepEqual(w.events.map(e => e.seq), [1, 2])
+  assert.equal(w.end, readFileSync(p).length)
+  appendFileSync(p, `\n${JSON.stringify(ev('nl000001-aaaa', 3))}`)
+  assert.deepEqual(readWindow(p, w.end).events.map(e => e.seq), [3])
+  // a half-written last line is still left alone
+  appendFileSync(p, `\n{"v":1,"seq":4,"te`)
+  const h = readWindow(p, w.end)
+  assert.deepEqual(h.events.map(e => e.seq), [3])
+  assert.equal(h.invalid, 0)
+})
+
+test('the approval covers the ledger setting too; a token swap needs no new approval; approvalPath is always absolute', async () => {
+  const srv = await fakeServer()
+  const r = repo(srv)
+  const show = async env => JSON.parse((await exec(env, ['remote', 'show', '--json'])).stdout)
+  assert.equal((await show(r.env)).approved, true)
+  // same address and project, but now without the ledger: the upload goes off
+  const set = await exec(r.env, ['remote', 'set', '--url', srv.url, '--project', 'alpha', '--no-ledger'], `${TOKEN}\n`)
+  assert.equal(set.status, 0, set.stderr)
+  assert.match(set.stdout, /업로드를 껐습니다/)
+  assert.equal(readConfig(r.env).upload, false)
+  // a token swap alone keeps an approved setting approved
+  const q = repo(srv)
+  const other = `vhdb_${'x'.repeat(43)}`
+  const swap = await exec(q.env, ['remote', 'set', '--url', srv.url, '--project', 'alpha'], `${other}\n`)
+  assert.equal(swap.status, 0, swap.stderr)
+  assert.equal(readConfig(q.env).upload, true)
+  assert.equal((await show(q.env)).approved, true)
+  // editing the file by hand: ledger false, or the key removed (= true) after approving without the ledger
+  const hand = repo(srv)
+  const handPath = join(hand.env.VHDB_DIR, 'remote.json')
+  const hd = JSON.parse(readFileSync(handPath, 'utf8'))
+  writeFileSync(handPath, `${JSON.stringify({ ...hd, ledger: false })}\n`, { mode: 0o600 })
+  assert.equal((await show(hand.env)).approved, false)
+  assert.match((await show(hand.env)).reason, /다시 켜야/)
+  assert.match((await runUpload(hand.env)).skipped, /다시 켜세요/)
+  const noLedger = repo(srv, { ledger: false })
+  const nlPath = join(noLedger.env.VHDB_DIR, 'remote.json')
+  const nl = JSON.parse(readFileSync(nlPath, 'utf8'))
+  delete nl.ledger
+  writeFileSync(nlPath, `${JSON.stringify(nl)}\n`, { mode: 0o600 })
+  assert.equal((await show(noLedger.env)).approved, false)
+  assert.match((await runUpload(noLedger.env)).skipped, /다시 켜세요/)
+  assert.equal(srv.S.requests.length, 0)
+  // approvalPath: given even without a server setting, and absolute for a relative VHDB_DIR
+  const bare = repo(null, { on: false })
+  const j = await show(bare.env)
+  assert.equal(j.configured, false)
+  assert.ok(isAbsolute(j.approvalPath))
+  assert.ok(j.approvalPath.endsWith(join('state', 'ui-approval')))
+  const rel = await exec({ ...bare.env, VHDB_DIR: 'relative-vhdb' }, ['remote', 'show', '--json'])
+  assert.ok(isAbsolute(JSON.parse(rel.stdout).approvalPath))
 })

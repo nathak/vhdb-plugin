@@ -7,7 +7,7 @@ import { rebuildErrors } from '../lib/hooks.mjs'
 import { formatHistory, formatSearch, redact } from '../lib/format.mjs'
 import { readFileSync } from 'node:fs'
 import { readConfig, setConfig } from '../lib/config.mjs'
-import { clearRemote, consumeUiApproval, describeUpload, readRemote, readUploadState, remotePath, statusJson, uploadStatePath, writeRemote } from '../lib/remote.mjs'
+import { approvalKey, clearRemote, consumeUiApproval, describeUpload, readRemote, readUploadState, remotePath, statusJson, uploadStatePath, writeRemote } from '../lib/remote.mjs'
 import { dryRun, enableUpload, runUpload, withUploadLock } from '../lib/upload.mjs'
 import { rmSync } from 'node:fs'
 
@@ -63,22 +63,17 @@ if (verb === 'remote') {
   try {
     if (tokenArg !== undefined) throw new Error('--token 은 쓰지 않습니다(프로세스 목록과 셸 기록에 남음): 토큰은 표준입력으로 넣으세요  예) pbpaste | node bin/vhdb.mjs remote set --url … --project …')
     if (sub === 'set') {
-      let before = {}
-      try {
-        before = JSON.parse(readFileSync(remotePath(process.env), 'utf8'))
-      } catch {
-        // none yet
-      }
       if (!url || !project) throw new Error('사용법: node bin/vhdb.mjs remote set --url <https://서버> --project <프로젝트> [--no-ledger]   (토큰은 표준입력)')
       if (process.stdin.isTTY) console.error('토큰(vhdb_…)을 붙여넣고 Enter, 이어서 Ctrl-D. 이미 저장된 토큰을 그대로 두려면 바로 Ctrl-D.')
       const token = readFileSync(0, 'utf8').trim()
       writeRemote(process.env, { url, project, token, ledger: !noLedger })
       const now = readRemote()
       say(`저장했습니다 (${remotePath(process.env)}, 권한 600). ${now.ok ? '다음: remote check, 그다음 remote on' : now.reason}`)
-      // Another server or project is another decision: the upload goes off until a person turns it on again.
-      if (readConfig().upload && (before.url !== now.url || before.project !== now.project)) {
+      // Another server, project or ledger setting is another decision: the upload goes off until a person turns it on again.
+      const cfg = readConfig()
+      if (cfg.upload && (!now.ok || cfg.uploadTarget !== approvalKey(now))) {
         setConfig(false, ['upload'])
-        say('서버나 프로젝트가 바뀌어 업로드를 껐습니다. 확인한 뒤 `remote on` 으로 다시 켜세요.')
+        say(now.ok ? '서버·프로젝트·원장 포함 여부가 바뀌어 업로드를 껐습니다. 확인한 뒤 `remote on` 으로 다시 켜세요. (--no-ledger 를 빼면 원장 포함으로 저장됩니다)' : `설정을 쓸 수 없어 업로드를 껐습니다: ${now.reason}`)
       }
     } else if (sub === 'show') {
       if (jsonOut) say(JSON.stringify(statusJson(process.env, readConfig())))
