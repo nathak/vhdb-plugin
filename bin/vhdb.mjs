@@ -5,7 +5,6 @@
 import { history, search, stat } from '../lib/client.mjs'
 import { rebuildErrors } from '../lib/hooks.mjs'
 import { formatHistory, formatSearch, redact } from '../lib/format.mjs'
-import { readFileSync } from 'node:fs'
 import { readConfig, setConfig } from '../lib/config.mjs'
 import { approvalKey, clearRemote, consumeUiApproval, describeUpload, readRemote, readUploadState, remotePath, statusJson, uploadStatePath, writeRemote } from '../lib/remote.mjs'
 import { dryRun, enableUpload, runUpload, withUploadLock } from '../lib/upload.mjs'
@@ -65,7 +64,11 @@ if (verb === 'remote') {
     if (sub === 'set') {
       if (!url || !project) throw new Error('사용법: node bin/vhdb.mjs remote set --url <https://서버> --project <프로젝트> [--no-ledger]   (토큰은 표준입력)')
       if (process.stdin.isTTY) console.error('토큰(vhdb_…)을 붙여넣고 Enter, 이어서 Ctrl-D. 이미 저장된 토큰을 그대로 두려면 바로 Ctrl-D.')
-      const token = readFileSync(0, 'utf8').trim()
+      // Not readFileSync(0): on a terminal whose stdin is non-blocking that throws EAGAIN.
+      let token = ''
+      process.stdin.setEncoding('utf8')
+      for await (const chunk of process.stdin) token += chunk
+      token = token.trim()
       writeRemote(process.env, { url, project, token, ledger: !noLedger })
       const now = readRemote()
       say(`저장했습니다 (${remotePath(process.env)}, 권한 600). ${now.ok ? '다음: remote check, 그다음 remote on' : now.reason}`)
